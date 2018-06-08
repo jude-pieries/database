@@ -1,0 +1,3731 @@
+﻿1.) Database  information
+2.) Size of the individual  DB's
+3.) Size of the DB data and the log file size
+4.) Orphaned Users 
+6.) Get the date the statistics got updated 
+13.) Databases Mirrored
+13 A) Changing the mirrorestoreing time out 
+13 B) Pause and resume Mirroring
+14.) Currently running queries 
+15.) Last restore Backup  list
+16.) Failed Jobs
+17.) Page Splits
+18.) Checking locked objects 
+19.) Currently running Query in sql server
+20.) Job Owners
+21.) Check if clustered index exists and No of records in table 
+22.)  Create Login with SID
+23.) List local drives 
+24.) Next time a sql job runs 
+38.) SQL Server User Permission 
+39.) DB backup History
+40.) DB Restore History 
+41.) Last update of Databases States 
+42.) CDC
+43.) Verify that CDc is Enabled 
+44.) Read Error log 
+45.) Logshipping - To stnadby and Recovery
+49.) Checking for AG failover 
+
+
+
+1.) Database  information (MB)
+
+name 
+		CREATE_DATE , 
+		COMPATIBILITY_LEVEL SQL_Version, 
+		COLLATION_NAME Collation , 
+		USER_ACCESS_DESC USER_ACCESS_LEVEL,
+		CASE Is_Read_Only 
+			WHEN 0 
+			THEN 'NO' 
+			ELSE 'YES' 
+		END ISReadOnly , 
+		SUSER_SNAME(Owner_sid) OwnerName ,
+		State_Desc,
+		Recovery_Model_Desc , 
+		--is_encrypted  Encrypted_Server ,  (SQL 2008)
+		CASE 
+			WHEN is_published  = 1 THEN 'Replicated'  
+			WHEN is_subscribed   = 1 THEN 'Replicated' 
+			WHEN is_merge_published   = 1 THEN 'Replicated' 
+			WHEN is_distributor   = 1 THEN 'Replicated'
+			ELSE 'NO'
+			End 'IsPart_Of_Replciation'
+FROM MASTER.sys.databases 
+WHERE NAME NOT IN ('MASTER','TEMPDB','MSDB','MODEL','SSLDBA')
+ORDER BY NAME 
+
+
+2.) Size of the databases (MB)
+
+SELECT DB_NAME(database_id) AS DatabaseName,
+--Name AS Logical_Name,
+--Physical_Name, 
+SUM((size*8)/1024) SizeMB
+FROM sys.master_files
+WHERE DB_NAME(database_id) NOT IN ('MASTER','TEMPDB','MSDB','MODEL','SSLDBA')
+	--and DB_NAME(database_id) ='Adventureworks'
+	GROUP BY DB_NAME(database_id)
+ORDER BY DB_NAME(database_id) 
+
+
+3.) Size of the DB data and the log file size (MB)
+
+ SELECT A.DatabaseName , sum(A.++) DataFile ,sum(B.Size)  LogFile
+ from  
+(
+SELECT DB_NAME(database_id) AS DatabaseName, 
+		SUM((size*8)/1024) Size
+FROM sys.master_files
+WHERE DB_NAME(database_id) NOT IN ('MASTER','TEMPDB','MSDB','MODEL','SSLDBA')
+AND type_desc = 'ROWS'
+GROUP BY DB_NAME(database_id)
+) A 
+
+ JOIN  
+(
+SELECT DB_NAME(database_id) AS DatabaseName, 
+		SUM((size*8)/1024) Size
+FROM sys.master_files
+WHERE DB_NAME(database_id) NOT IN ('MASTER','TEMPDB','MSDB','MODEL','SSLDBA')
+AND type_desc = 'LOG' 
+GROUP BY DB_NAME(database_id)
+) b ON A.DatabaseName = B.DatabaseName 
+group by A.DatabaseName
+order by a.DatabaseName
+
+
+4.)  File used sizes 
+select
+	[FileSizeMB]	=
+		convert(numeric(10,2),round(a.size/128.,2)),
+	[UsedSpaceMB]	=
+		convert(numeric(10,2),round(fileproperty( a.name,'SpaceUsed')/128.,2)) ,
+	[UnusedSpaceMB]	=
+		convert(numeric(10,2),round((a.size-fileproperty( a.name,'SpaceUsed'))/128.,2)) ,
+	[DBFileName]	= a.name
+from
+	sysfiles a
+	
+	--============================================
+	
+	CREATE TABLE Temp_<>_LogInfo_20062012_0920 ( Field int, FileSize int , StartOffset  numeric(10) , FSeqNo int, Status smallint, Parity smallint, CreateLSN numeric(20))
+	
+	
+	 DECLARE  @sql varchar(250)
+	 set @sql = 'DBCC LOGINFO WITH NO_INFOMSGS'
+	 INSERT INTO Temp_Adventureworks_LogInfo_20062012_0920
+	 EXEC(@sql )
+	
+	select (sum(CASE WHEN status = 2 THEN filesize *1.0 END)/1024)/1024 used , (sum(CASE WHEN status <> 2 THEN filesize *1.0 END)/1024)/1024 Unused from Temp_<>_LogInfo_20062012_0920 
+	--============================================
+5.) Shrink files 
+
+		--IPSProduction_log
+		declare @DBFileName sysname
+		declare @TargetFreeMB int
+		declare @ShrinkIncrementMB int
+		
+		-- Set Name of Database file to shrink
+		set @DBFileName = 'IPSProduction_log'
+		d
+		-- Set Desired file free space in MB after shrink
+		set @TargetFreeMB = 1000
+		
+		-- Set Increment to shrink file by in MB
+		set @ShrinkIncrementMB = 500
+		
+		-- Show Size, Space Used, Unused Space, and Name of all database files
+		select
+			[FileSizeMB]	=
+				convert(numeric(10,2),round(a.size/128.,2)),
+			[UsedSpaceMB]	=
+				convert(numeric(10,2),round(fileproperty( a.name,'SpaceUsed')/128.,2)) ,
+			[UnusedSpaceMB]	=
+				convert(numeric(10,2),round((a.size-fileproperty( a.name,'SpaceUsed'))/128.,2)) ,
+			[DBFileName]	= a.name
+		from
+			sysfiles a
+		where name = @DBFileName 
+		
+		declare @sql varchar(8000)
+		declare @SizeMB int
+		declare @UsedMB int
+		
+		-- Get current file size in MB
+		select @SizeMB = size/128. from sysfiles where name = @DBFileName
+		
+		-- Get current space used in MB
+		select @UsedMB = fileproperty( @DBFileName,'SpaceUsed')/128.
+		
+		
+		
+		SET @ShrinkIncrementMB =  (@SizeMB - @UsedMB  ) * .10
+		 
+		select @SizeMB - @UsedMB UnusedSpace , @SizeMB FileSize , @ShrinkIncrementMB ShrinkIncrementMB
+		
+		if (@SizeMB - @UsedMB) < (@SizeMB-@ShrinkIncrementMB )
+		BEGIN
+		set @sql =
+			'dbcc shrinkfile ( '+@DBFileName+', '+
+			convert(varchar(20),@SizeMB-@ShrinkIncrementMB)+' ) '
+		
+		EXEC (@sql) 
+		END
+		
+
+6.) Get the date the statistics got updated 
+
+SELECT Name AS  Index_Name 
+,STATS_DATE(Object_id ,index_iD) AS StateUpdate
+from Sys.indexes
+where OBJECT_ID = object_id('dbo.Employees')
+
+6 A.)  Users with SA 
+	SQl 2000 
+	
+	SELECT  @@SERVERNAME , name ,CONVERT(VARCHAR(10),createdate ,101)
+	FROM    syslogins  
+	WHERE   sysadmin = 1
+	
+	
+	SQL 2000 > 
+	SELECT  @@SERVERNAME , p.name ,CONVERT(VARCHAR(10),p.create_date ,101)
+	--p.name AS [loginname] ,
+	--        p.type ,
+	--        p.type_desc ,
+	--        p.is_disabled,
+	--        CONVERT(VARCHAR(10),p.create_date ,101) AS [created],
+	--        CONVERT(VARCHAR(10),p.modify_date , 101) AS [update]
+	FROM    sys.server_principals p
+	        JOIN sys.syslogins s ON p.sid = s.sid
+	WHERE   p.type_desc IN ('SQL_LOGIN', 'WINDOWS_LOGIN', 'WINDOWS_GROUP')
+	        -- Logins that are not process logins
+	        AND p.name NOT LIKE '##%'
+	        -- Logins that are sysadmins
+	        AND s.sysadmin = 1
+
+
+6. B.) Users with DB_Owner
+create table #temp_ServerLoginDetails ( Svrname varchar(100) , DBName varchar(150), DBRole Varchar(100), DBMember varchar(100) ) 
+insert into #temp_ServerLoginDetails  
+exec sp_msForEachDb ' if 1 =  ( select case when ''?'' like ''Xerov3_%'' then 1 else 0 end ) 
+use [?] ;
+
+select @@Servername , db_name() as [database_name], r.[name] as [role], p.[name] as [member] from  
+    ?.sys.database_role_members m 
+join 
+    ?.sys.database_principals r on m.role_principal_id = r.principal_id 
+join 
+    ?.sys.database_principals p on m.member_principal_id = p.principal_id 
+where 
+    r.name = ''db_owner'''
+
+
+select * from #temp_ServerLoginDetails  where DBname Like 'XeroV3_%' and SVrName like '%sq53'
+	        
+	
+	
+	        
+	
+6 C.) Sql version details
+	SELECT @@servername , @@VERSION , 
+	SUBSTRING(@@version ,  CHARINDEX('Microsoft',@@VERSION,1) + 10 , CHARINDEX('-',@@VERSION,1)-11)
+	,SUBSTRING(@@version , CHARINDEX('-',@@VERSION,1) + 1, 14) build
+	,CHARINDEX('-',@@VERSION,1)
+	
+
+
+
+7.) Updating all the statistics in a table 
+
+
+UPDATE STATISTICS <Table_Name>
+WITH FULLSCAN
+
+8.) Identifying the triggers associated to a table 
+
+SELECT * FROM sysobjects WHERE xtype = 'TR'  AND parent_Obj = 1597613130
+
+
+
+9.)  Get the Trigger count for a table
+Select A.Name , B.TriggerCount , IC.RowCnt
+From (select * from sysobjects where xtype = 'u') A
+LEFT JOIN (select Parent_Obj ,Count (1) TriggerCount From sysobjects where xtype = 'TR' group by Parent_Obj ) B ON A.ID = B.Parent_Obj
+left JOIN (select ID , RowCnt from sysindexes where IndID = 1 )  IC ON IC.ID = A.ID
+--where IC.ID is null
+order by  IC.RowCnt desc 
+
+10.) First time compilations 
+
+
+11.)  Currently executing queries
+
+select
+	[FileSizeMB]	=
+		convert(numeric(10,2),round(a.size/128.,2)),
+	[UsedSpaceMB]	=
+		convert(numeric(10,2),round(fileproperty( a.name,'SpaceUsed')/128.,2)) ,
+	[UnusedSpaceMB]	=
+		convert(numeric(10,2),round((a.size-fileproperty( a.name,'SpaceUsed'))/128.,2)) ,
+	[DBFileName]	= a.name
+from
+	sysfiles a
+
+
+12.) 
+select 
+UserName = name, UserSID = sid from sysusers 
+			WHERE issqluser = 1 AND 
+				(sid IS NOT NULL AND sid <> 0x0) AND 
+				(LEN(sid) <= 16) AND SUSER_SNAME(sid) IS NULL
+
+
+13.) Databases mirrored 
+
+
+
+
+SELECT
+A.name,
+B.mirroring_state,
+B.mirroring_state_desc,
+B.mirroring_role_desc,
+B.mirroring_partner_name,
+B.mirroring_partner_instance,
+B.mirroring_witness_name,
+B.mirroring_witness_state
+
+FROM
+sys.databases A
+INNER JOIN sys.database_mirroring B
+ON A.database_id=B.database_id
+WHERE a.database_id > 4
+ORDER BY A.NAME
+
+13 A) Changing the mirroring time out 
+
+	ALTER DATABASE dbname SET PARTNER TIMEOUT 20
+	Pasted from <http://ask.sqlservercentral.com/questions/42722/how-to-get-partner-timeout-value.html> 
+
+13 B) Pause\Resume and Fail Over mirroring DB's
+	-- Pause Mirrorred DB's
+	ALTER DATABASE [SSIS] SET PARTNER SUSPEND
+	
+	-- Resume Mirroring
+	ALTER DATABASE [SSIS] SET PARTNER RESUME
+	
+	--Fail over Database 
+	USE [master];ALTER DATABASE [SSIS] SET PARTNER FAILOVER
+	
+
+
+14.) Currently running queries 
+SELECT 
+		session_id, 
+		DB_NAME(database_id) AS [database], 
+		command, 
+		percent_complete, 
+		'' AS [--Remaining-->],
+		RIGHT('0000'+CONVERT(VARCHAR(6),((estimated_completion_Time/1000)/86400)),4) AS [days], 
+		RIGHT('00'+CONVERT(VARCHAR(3),(((estimated_completion_Time/1000)%86400)/3600)),2) AS [hours],
+		RIGHT('00'+CONVERT(VARCHAR(3),((((estimated_completion_Time/1000)%86400)%3600)/60)),2) AS [minutes],
+		RIGHT('00'+CONVERT(VARCHAR(3),((((estimated_completion_Time/1000)%86400)%3600)%60)),2) AS [seconds]
+	FROM sys.dm_exec_requests 
+	WHERE percent_complete>0
+
+
+select top 5 
+session_id, start_time, status, command, last_wait_type, blocking_session_id, percent_complete,
+estimated_completion_time/60 [est_completion_SEC],
+estimated_completion_time/60/60 [est_completion_MINS]
+from sys.dm_exec_requests
+where 
+	command like 'backup%'
+	OR command like 'restore%'
+	OR command like 'DBCC%'12:02 p.m. 2/09/2015
+order by start_time desc;
+
+	
+15.) Last restore list
+
+DECLARE @dbname sysname, @days int
+SET @dbname = NULL --substitute for whatever database name you want
+SET @days = -30 --previous number of days, script will default to 30
+SELECT
+ rsh.destination_database_name AS [Database],
+ rsh.user_name AS [Restored By],
+ CASE WHEN rsh.restore_type = 'D' THEN 'Database'
+  WHEN rsh.restore_type = 'F' THEN 'File'
+  WHEN rsh.restore_type = 'G' THEN 'Filegroup'
+  WHEN rsh.restore_type = 'I' THEN 'Differential'
+  WHEN rsh.restore_type = 'L' THEN 'Log'
+  WHEN rsh.restore_type = 'V' THEN 'Verifyonly'
+  WHEN rsh.restore_type = 'R' THEN 'Revert'
+  ELSE rsh.restore_type 
+ END AS [Restore Type],
+ rsh.restore_date AS [Restore Started],
+ bmf.physical_device_name AS [Restored From], 
+ rf.destination_phys_name AS [Restored To]
+FROM msdb.dbo.restorehistory rsh
+ INNER JOIN msdb.dbo.backupset bs ON rsh.backup_set_id = bs.backup_set_id
+ INNER JOIN msdb.dbo.restorefile rf ON rsh.restore_history_id = rf.restore_history_id
+ INNER JOIN msdb.dbo.backupmediafamily bmf ON bmf.media_set_id = bs.media_set_id
+WHERE rsh.restore_date >= DATEADD(dd, ISNULL(@days, -30), GETDATE()) --want to search for previous days
+AND destination_database_name = ISNULL(@dbname, destination_database_name) --if no dbname, then return all
+ORDER BY rsh.restore_history_id DESC
+GO
+
+Pasted from <http://www.mssqltips.com/sqlservertip/1724/when-was-the-last-time-your-sql-server-database-was-restored/
+
+
+16.) Failed Jobs
+-- Variable Declarations 
+DECLARE @PreviousDate datetime 
+DECLARE @Year VARCHAR(4) 
+DECLARE @Month VARCHAR(2) 
+DECLARE @MonthPre VARCHAR(2) 
+DECLARE @Day VARCHAR(2) 
+DECLARE @DayPre VARCHAR(2) 
+DECLARE @FinalDate INT 
+
+-- Initialize Variables 
+SET @PreviousDate = DATEADD(dd, -7, GETDATE()) -- Last 7 days  
+SET @Year = DATEPART(yyyy, @PreviousDate)  
+SELECT @MonthPre = CONVERT(VARCHAR(2), DATEPART(mm, @PreviousDate)) 
+SELECT @Month = RIGHT(CONVERT(VARCHAR, (@MonthPre + 1000000000)),2) 
+SELECT @DayPre = CONVERT(VARCHAR(2), DATEPART(dd, @PreviousDate)) 
+SELECT @Day = RIGHT(CONVERT(VARCHAR, (@DayPre + 1000000000)),2) 
+SET @FinalDate = CAST(@Year + @Month + @Day AS INT) 
+
+-- Final Logic 
+SELECT   j.[name], 
+         s.step_name, 
+         h.step_id, 
+         h.step_name, 
+         h.run_date, 
+         h.run_time, 
+         h.sql_severity, 
+         h.message, 
+         h.server 
+FROM     msdb.dbo.sysjobhistory h 
+         INNER JOIN msdb.dbo.sysjobs j 
+           ON h.job_id = j.job_id 
+         INNER JOIN msdb.dbo.sysjobsteps s 
+           ON j.job_id = s.job_id
+           AND h.step_id = s.step_id
+WHERE    h.run_status = 0 -- Failure 
+         AND h.run_date > @FinalDate 
+ORDER BY h.instance_id DESC 
+
+Pasted from <http://www.mssqltips.com/sqlservertip/1054/failed-sql-server-agent-jobs/> 
+
+17.) Page splits
+select Operation, AllocUnitName, COUNT(*) as NumberofIncidents
+from   ::fn_dblog(null, null)
+where Operation = N'LOP_DELETE_SPLIT'
+group by Operation, AllocUnitName
+
+
+	18) Checking locked objects 
+	select * from sys.dm_tran_locks where resource_database_id in(  8,7)and resource_associated_entity_id > 0
+	
+19) Currently running Query in sql server
+
+SELECT DB_name(Database_ID) DBName, SDER.[statement_start_offset],
+SDER.[statement_end_offset], 
+CASE
+WHEN SDER.[statement_start_offset]>0THEN
+--The start of the active command is not at the beginning of the full command text 
+CASE SDER.[statement_end_offset] 
+WHEN -1 THEN 
+--The end of the full command is also the end of the active statement 
+SUBSTRING(DEST.TEXT,(SDER.[statement_start_offset]/2)+1,2147483647) 
+ELSE
+--The end of the active statement is not at the end of the full command 
+SUBSTRING(DEST.TEXT,(SDER.[statement_start_offset]/2)+1,(SDER.[statement_end_offset]-SDER.[statement_start_offset])/2) 
+END 
+ELSE 
+--1st part of full command is running 
+CASE SDER.[statement_end_offset]
+WHEN -1 THEN 
+--The end of the full command is also the end of the active statement 
+RTRIM(LTRIM(DEST.[text])) 
+ELSE
+--The end of the active statement is not at the end of the full command 
+LEFT(DEST.TEXT,(SDER.[statement_end_offset]/2)+1) 
+END
+END AS [executing statement],
+DEST.[text] AS [full statement code]
+FROM sys.[dm_exec_requests]SDER CROSS APPLY sys.[dm_exec_sql_text](SDER.[sql_handle])DEST 
+WHERE SDER.session_id>50 
+ORDER BY SDER.[session_id], SDER.[request_id]
+
+Pasted from <http://www.mssqltips.com/sqlservertip/1811/how-to-isolate-the-current-running-commands-in-sql-server/> 
+
+20.) Job Owners 
+select s.name,l.name
+ from  msdb..sysjobs s 
+ left join master.sys.syslogins l on s.owner_sid = l.sid
+
+
+21.) Check if clustered index exists and No of records in table
+
+USE FundIT
+GO
+Create table #TempIndex ( ID int) 
+INSERT INTO #TempIndex VALUES ( OBJECT_ID('tbl_fundit_contract_funding_source') )
+
+SELECT OBJECT_NAME (ID) TabelName , indid , rowcnt 
+FROM sys.sysindexes 
+WHERE ID IN ( SELECT ID FROM #TempIndex )
+And indid in (1,0)
+
+ 
+22.)  Create Login with SID
+
+CREATE LOGIN [esam_search] WITH password = 
+0x0100F2C6ADC64E59D28531B1000DCADB0F881E51D9329F358A0B
+ hashed, sid = 
+0x3C1025E1DBC23D469CF1E9141258A0EB
+, default_database = [ESAM_MOH_SUGGESTADDRESS], CHECK_EXPIRATION=OFF, CHECK_POLICY=OFF
+GO
+
+
+
+23.) List local drives 
+
+xp_cmdshell 'fsutil fsinfo drives'
+
+
+24.) Next time a sql job runs
+
+
+
+USE msdb
+;WITH CTE AS (SELECT schedule_id, job_id, RIGHT('0'+CAST(next_run_time AS VARCHAR(6)),6) AS next_run_time, next_run_date
+FROM sysjobschedules)
+SELECT A.name Job_Name,
+'Will be running today at '+
+SUBSTRING(CONVERT(VARCHAR(10), CASE WHEN SUBSTRING (CONVERT(VARCHAR(10),next_run_time) , 1 ,2) > 12
+THEN SUBSTRING (CONVERT(VARCHAR(10),next_run_time),1,2) -12
+ELSE SUBSTRING (CONVERT(VARCHAR(10),next_run_time),1,2) END),1,2)
++':'+SUBSTRING (CONVERT(VARCHAR(10), next_run_time),3,2)
++':'+SUBSTRING (CONVERT(VARCHAR(10), next_run_time ),5,2) 'Scheduled At'
+FROM sysjobs A ,CTE B
+WHERE A.job_id = B.job_id
+AND SUBSTRING(CONVERT(VARCHAR(10),next_run_date) , 5,2) +'/'+
+SUBSTRING(CONVERT(VARCHAR(10),next_run_date) , 7,2) +'/'+
+SUBSTRING(CONVERT(VARCHAR(10),next_run_date),1,4) = CONVERT(VARCHAR(10),GETDATE(),101)
+AND (SUBSTRING( CONVERT(VARCHAR(10),
+CASE WHEN SUBSTRING (CONVERT(VARCHAR(10),next_run_time) , 1 ,2) > 12
+THEN SUBSTRING (CONVERT(VARCHAR(10),next_run_time) , 1 ,2) -12
+ELSE SUBSTRING (CONVERT(VARCHAR(10),next_run_time) , 1 ,2) END),1,2)
++':'+SUBSTRING (CONVERT(VARCHAR(10), next_run_time ),3,2)
++':'+SUBSTRING (CONVERT(VARCHAR(10), next_run_time ),5,2)) >
+SUBSTRING (CONVERT( VARCHAR(30) , GETDATE(),9),13,7)
+
+
+25.) Server Details 
+
+SELECT  
+		SERVERPROPERTY('BuildClrVersion')  BuildClrVersion
+		,SERVERPROPERTY('collation') collation 
+		,SERVERPROPERTY('Edition') Edition 
+		,SERVERPROPERTY('EngineEdition') EngineEdition
+		,SERVERPROPERTY('HadrManagerStatus') AlwaysOn_Availability_Manager_Group_Started
+		,SERVERPROPERTY('MachineName') MachineName 
+		,SERVERPROPERTY('ServerName') ServerName 
+		,SERVERPROPERTY('InstanceName') InstanceName
+		,SERVERPROPERTY('IsClustered') IsClustered
+		,SERVERPROPERTY('IsFullTextInstalled') IsFullTextInstalled
+		,SERVERPROPERTY('IsHadrEnabled') 	AlwaysOnAvailabilityGroupsIsEnabled 
+		,SERVERPROPERTY('IsIntegratedSecurityOnly') ServerAuthentication
+		,SERVERPROPERTY('IsLocalDB') 	ServerIsSQLServerExpressLocalDB 
+		,SERVERPROPERTY('IsSingleUser') ServerInSingleUserMode 
+		,SERVERPROPERTY('LicenseType') LicenseType 
+		,SERVERPROPERTY('NumLicenses') NumLicenses 
+		,SERVERPROPERTY('ProductVersion') ProductVersion
+		,SERVERPROPERTY('ResourceLastUpdateDateTime') ResourceLastUpdateDateTime
+		,SERVERPROPERTY('ResourceVersion') ResourceDBVersion
+		,SERVERPROPERTY('SqlCharSet') SqlCharSet
+		,SERVERPROPERTY('SqlSortOrder') SqlSortOrder
+		
+26.) CPU and Mem details
+
+	SELECT cpu_count AS [Logical CPU Count], hyperthread_ratio AS Hyperthread_Ratio,
+	cpu_count/hyperthread_ratio AS Physical_CPU_Count,
+	physical_memory_in_bytes/1048576 AS Physical_Memory_in_MB,
+	sqlserver_start_time, affinity_type_desc -- (affinity_type_desc is only in 2008 R2)
+	FROM sys.dm_os_sys_info
+	
+	
+	-- Identify Virtual Processors in for SQL Server 2000
+	CREATE TABLE #TempTable
+	([Index] VARCHAR(2000),
+	[Name] VARCHAR(2000),
+	[Internal_Value] VARCHAR(2000),
+	[Character_Value] VARCHAR(2000)) ;
+	INSERT INTO #TempTable
+	EXEC xp_msver;
+	SELECT Internal_Value AS VirtualCPUCount
+	FROM #TempTable
+	WHERE Name = 'ProcessorCount';
+	DROP TABLE #TempTable
+	
+	
+27.)  Last backups for the databases 
+http://www.mssqltips.com/sqlservertip/1601/script-to-retrieve-sql-server-database-backup-history-and-no-backups/
+
+  SELECT 
+   CONVERT(CHAR(100), SERVERPROPERTY('Servername')) AS Server,
+   msdb.dbo.backupset.database_name, 
+   MAX(msdb.dbo.backupset.backup_finish_date) AS last_db_backup_date
+FROM   msdb.dbo.backupmediafamily 
+   INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id 
+	WHERE  msdb..backupset.type = 'L'
+GROUP BY
+   msdb.dbo.backupset.database_name 
+ORDER BY 
+   msdb.dbo.backupset.database_name
+
+28.) Databases backups which are older than 7 days old 
+
+SELECT 
+   CONVERT(CHAR(100), SERVERPROPERTY('Servername')) AS Server,
+   msdb.dbo.backupset.database_name, 
+   msdb.dbo.backupset.backup_start_date, 
+   msdb.dbo.backupset.backup_finish_date,
+   msdb.dbo.backupset.expiration_date,
+   CASE msdb..backupset.type 
+       WHEN 'D' THEN 'Database' 
+       WHEN 'L' THEN 'Log' 
+   END AS backup_type, 
+   msdb.dbo.backupset.backup_size, 
+   msdb.dbo.backupmediafamily.logical_device_name, 
+   msdb.dbo.backupmediafamily.physical_device_name,  
+   msdb.dbo.backupset.name AS backupset_name,
+   msdb.dbo.backupset.description
+FROM   msdb.dbo.backupmediafamily 
+   INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id 
+--WHERE  (CONVERT(datetime, msdb.dbo.backupset.backup_start_date, 102) >= GETDATE() - 7) 
+ORDER BY 
+   msdb.dbo.backupset.database_name,
+   msdb.dbo.backupset.backup_finish_date
+   
+	29) Check if server is virtual 
+	
+	declare @Virtualname varchar(255)
+	declare @Virtual varchar(255)
+	create table #OSinfo(OSinfo varchar (255))
+	insert into #OSinfo
+	exec master..xp_cmdshell 'systeminfo'
+	set @Virtualname =(select ltrim(SUBSTRING(OSinfo,CHARINDEX(' ',OSinfo),LEN(OSinfo)))
+	from #OSinfo
+	where OSinfo like '%system%' and OSinfo like '%manufacture%')
+	
+	if (@Virtualname not like '%virtual%')
+	begin
+	set @Virtual='Not Virtual'
+	set @Virtualname='Not Virtual'
+	end
+	else
+	begin
+	set @Virtual='Virtual'
+	end
+	
+	
+	print @Virtualname
+	print @Virtual
+	
+	
+	30) Checking for enterprise features
+	IF OBJECT_ID('tempdb..#RuleValue') IS NOT NULL 
+	        DROP TABLE #RuleValue ;
+	            CREATE TABLE #RuleValue(RuleID int , Rule_Value1 varchar(4000) , Rule_Value2 varchar(4000) ,Rule_Value3 varchar(4000))
+	 
+	 
+	    IF @@VERSION NOT LIKE '%Microsoft SQL Server 2000%'
+	        AND @@VERSION NOT LIKE '%Microsoft SQL Server 2005%' 
+	        BEGIN
+	                  EXEC dbo.sp_MSforeachdb 'INSERT INTO #RuleValue (  RuleID  , Rule_Value1 , Rule_Value2 , Rule_Value3  )
+	                  SELECT DISTINCT 33,   ''?'' , feature_name , ''''   FROM [?].sys.dm_db_persisted_sku_features' ;
+	        END ;
+	 
+	select * from #RuleValue
+
+	31) The last time SQL data files grew
+	From <http://strictlysql.blogspot.co.nz/2011/01/finding-last-database-growth-date-and.html> 
+	
+	
+	DECLARE @path NVARCHAR(1000)
+	
+	
+	SELECT @path = Substring(PATH, 1, Len(PATH) - Charindex('\', Reverse(PATH))) +
+	                      '\log.trc'
+	
+	
+	--select * FROM   ::fn_trace_gettable('W:\Microsoft SQL Server\MSSQL.1\MSSQL\LOG\log.trc', 0)
+	FROM   sys.traces
+	WHERE  id = 1
+	
+	--Select @path
+	
+	SELECT databasename,
+	       e.name   AS eventname,
+	       cat.name AS [CategoryName],
+			A.FileName ,
+	       starttime,
+	       e.category_id,
+	       loginname,
+	       loginsid,
+	       spid,
+	       hostname,
+	       applicationname,
+	       servername,
+	       textdata,
+	       objectname,
+	       eventclass,
+	       eventsubclass
+	FROM   ::fn_trace_gettable(@path, 0) A
+	       INNER JOIN sys.trace_events e
+	         ON eventclass = trace_event_id
+	       INNER JOIN sys.trace_categories AS cat
+	         ON e.category_id = cat.category_id
+	WHERE  e.name IN( 'Data File Auto Grow', 'Log File Auto Grow' )
+	ORDER  BY starttime DESC 
+	
+	
+	
+	32) Check the replication row cnt
+
+select '''' + object_name(objid) + '''' + ' , ' from sysarticles
+
+
+select OBJECT_NAME(ID) TableName , rowcnt from sysindexes where indid = 1 and id in
+(
+select ID from sysobjects where name  in
+(
+'Bandwidth' , 
+'BillItem' , 
+ )
+)order by OBJECT_NAME(ID)
+
+	
+	
+	33) Get the Database files 
+	
+	CREATE TABLE #TEMP_SysFiles ( DBName varchar(100) , LoggicalName varchar(100) ,  FilePath varchar(200) ) 
+	SP_MSFOREACHDB 'INSERT INTO  #TEMP_SysFiles  select ''?'', name LoggicalName , filename FilePath  from ?..sysfiles' 
+	
+	SELECT * FROM #TEMP_SysFiles 
+	
+	34) Index usage stats 
+	SELECT object_name(a.object_id) AS table_name, 
+	COALESCE(name, 'table with no clustered index') AS index_name, 
+	type_desc AS index_type, 
+	user_seeks, 
+	user_scans, 
+	user_lookups, 
+	user_updates 
+	FROM sys.dm_db_index_usage_stats a 
+	INNER JOIN sys.indexes b ON a.index_id = b.index_id AND a.object_id = b.object_id 
+	where A.database_id = DB_ID('ISA_TMG') 
+	and A.object_id = OBJECT_ID ('WebProxyLog') 
+	and b.name = 'IX_WebProxyLog_DateTime'
+	
+	
+	35) Change the auto growth setting 
+	
+	CREATE TABLE #TempDB ( DBName varchar(100),  Size int , maxsize int, Growth int, status int , perf int ,Name varchar(200),FileName varchar(200)) 
+	sp_msforeachdb 'if exists (select 1from ?..sysfiles where FileID =1 and Growth = 128 ) insert into #TempDB select ''?'' ,Size, maxsize , Growth , status , perf,Name ,FileName from ?..sysfiles where FileID =1 and Growth = 128 '
+	--
+	
+	--drop table #TempDB 
+	select * from #TempDB
+	select 'ALTER DATABASE [' + DBNAme + '] MODIFY FILE ( NAME = N''' + Name + ''' , FILEGROWTH = 10%)' from #TempDB 
+	
+	
+	36) Settingup mirroring
+	http://blog.sqlauthority.com/2010/01/11/the-server-network-address-tcpsqlserver5023-can-not-be-reached-or-does-not-exist-check-the-network-address-name-and-that-the-ports-for-the-local-and-remote-endpoints-are-operational-microso/
+	
+	SQL SERVER – The server network address “TCP://SQLServer:5023″ can not be reached or does not exist. Check the network address name and that the ports for the local and remote endpoints are operational. (Microsoft SQL Server, Error: 1418)
+	While doing SQL Mirroring, we receive the following as the most common error:
+	The server network address “TCP://SQLServer:5023″ cannot be reached or does not exist.
+	Check the network address name and that the ports for the local and remote endpoints are operational.
+	(Microsoft SQL Server, Error: 1418)
+	The solution to the above problem is very simple and as follows.
+	Fix/WorkAround/Solution: Try all the suggestions one by one.
+	Suggestion 1: Make sure that on Mirror Server the database is restored with NO RECOVERY option (This is the most common problem).
+	Suggestion 2: Make sure that from Principal the latest LOG backup is restored to mirror server. (Attempt this one more time even though the full backup has been restored recently).
+	Suggestion 3: Check if you can telnet to your ports using command TELNET ServerName Ports like “telnet SQLServerName 5023″.
+	Suggestion 4: Make sure your firewall is turned off.
+	Suggestion 5: Verify that the endpoints are started on the partners by using the state orstate_desc column the of the sys.database_mirroring_endpoints catalog view. You can start end point by executing an ALTER ENDPOINT statement.
+	Suggestion 6: Try the following command as one of the last options.
+	GRANT CONNECT ON ENDPOINT::Mirroring TO ALL
+	Suggestion 7: Delete the end points and recreate them.
+	
+	
+	37.) Copying a file from Server A to Server B
+	copy /Y "Z:\SSL\SQLDataDumps\provider_Data_Dump.dat" "\\MRTUASSQL04\SQLProviderBackup\" > C:\SQLReports\CopyDatabaseBackups.out
+	
+	
+  38.)   SQL Server User Permission 
+IF OBJECT_ID('tempdb..#tempUserPermisson') IS NOT NULL
+	DROP TABLE #tempUserPermisson 
+
+
+CREATE TABLE #tempUserPermisson 
+( 
+DBName varchar(100) ,
+UserName nvarchar(200) , 
+UserType varchar(100) , 
+RoleName Varchar(100), 
+RoleType varchar(100),
+IsFixedRole int 
+) 
+;
+
+INSERT INTO #tempUserPermisson
+SELECT 'ALL_DBS' , name , '','SYSADMIN' ,'SERVERROLE' , 1  FROM MASTER..SYSLOGINS WHERE sysadmin = 1
+exec sp_msforeachdb ' 
+INSERT INTO #tempUserPermisson 
+SELECT ''?'' ,
+p.name, p.type_desc, pp.name, pp.type_desc, pp.is_fixed_role
+FROM ?.sys.database_role_members roles
+JOIN ?.sys.database_principals p ON roles.member_principal_id = p.principal_id
+JOIN ?.sys.database_principals pp ON roles.role_principal_id = pp.principal_id
+'
+
+
+SELECT * FROM #tempUserPermisson --where DBNAme = 'WDHB_Common_Staging'
+
+
+
+39.) DB Backup History 
+
+SELECT  
+   CONVERT(CHAR(100), SERVERPROPERTY('Servername')) AS Server, 
+   msdb.dbo.backupset.database_name,  
+   msdb.dbo.backupset.backup_start_date,  
+   msdb.dbo.backupset.backup_finish_date, 
+   msdb.dbo.backupset.expiration_date, 
+   CASE msdb..backupset.type  
+       WHEN 'D' THEN 'Database'  
+       WHEN 'L' THEN 'Log'  
+	When 'I' THEN 'DIFF'
+   END AS backup_type,  
+   msdb.dbo.backupset.backup_size,  
+   msdb.dbo.backupmediafamily.logical_device_name,  
+   msdb.dbo.backupmediafamily.physical_device_name,   
+   msdb.dbo.backupset.name AS backupset_name, 
+   msdb.dbo.backupset.description , 
+  SUBSTRING(backupmediafamily.physical_device_name
+													  , len(backupmediafamily.physical_device_name) - charindex('\',reverse(backupmediafamily.physical_device_name),1) +2
+													  , len(backupmediafamily.physical_device_name)
+													  ) + ''' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 5 '
+													  ,  datediff(mi,backup_finish_date,getdate()) 
+FROM   msdb.dbo.backupmediafamily  
+   INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id  
+WHERE  (CONVERT(datetime, msdb.dbo.backupset.backup_start_date, 102) >= GETDATE() - 7)  
+ORDER BY  
+  
+   msdb.dbo.backupset.database_name, 
+   backup_set_id ,
+   msdb.dbo.backupset.backup_finish_date 
+
+40.) DB Restore History 
+DECLARE @dbname sysname, @days int
+SET @dbname = NULL --substitute for whatever database name you want
+SET @days = -30 --previous number of days, script will default to 30
+SELECT
+rsh.destination_database_name AS [Database],
+rsh.user_name AS [Restored By],
+CASE WHEN rsh.restore_type = 'D' THEN 'Database'
+  WHEN rsh.restore_type = 'F' THEN 'File'
+  WHEN rsh.restore_type = 'G' THEN 'Filegroup'
+  WHEN rsh.restore_type = 'I' THEN 'Differential'
+  WHEN rsh.restore_type = 'L' THEN 'Log'
+  WHEN rsh.restore_type = 'V' THEN 'Verifyonly'
+  WHEN rsh.restore_type = 'R' THEN 'Revert'
+  ELSE rsh.restore_type 
+ END AS [Restore Type],
+rsh.restore_date AS [Restore Started],
+bmf.physical_device_name AS [Restored From], 
+ rf.destination_phys_name AS [Restored To]
+FROM msdb.dbo.restorehistory rsh
+INNER JOIN msdb.dbo.backupset bs ON rsh.backup_set_id = bs.backup_set_id
+INNER JOIN msdb.dbo.restorefile rf ON rsh.restore_history_id = rf.restore_history_id
+INNER JOIN msdb.dbo.backupmediafamily bmf ON bmf.media_set_id = bs.media_set_id
+WHERE rsh.restore_date >= DATEADD(dd, ISNULL(@days, -30), GETDATE()) --want to search for previous days
+--AND destination_database_name = ISNULL(@dbname, destination_database_name) --if no dbname, then return all
+ORDER BY rsh.restore_history_id DESC
+GO
+
+41.) Last update of database states
+
+SELECT name AS stats_name, 
+   STATS_DATE(object_id, stats_id) AS statistics_update_date 
+FROM sys.stats 
+order by 
+STATS_DATE(object_id, stats_id) desc 
+
+
+
+SELECT name AS stats_name, 
+   STATS_DATE(object_id, stats_id) AS statistics_update_date 
+FROM sys.stats 
+where object_id = object_id('claims.LastSeenUserRoles')
+order by 
+STATS_DATE(object_id, stats_id) desc 
+
+
+42.) Find users in a AD group 
+Xp_logininfo 'AD group','members'
+
+Find the associated roles and databases for a user  
+sp_helplogins 'xero\SQL Server AUTax Read Only Access'
+
+
+
+43.)  Find if a user is in  server role 
+Select IS_SERVERROLEMEMBER('sysadmin','AD account') 
+
+44.) The tables and the related database procedure 
+
+WITH TableList_CTE (TableName)
+AS
+(
+SELECT TABLE_NAME TableName
+	-- TABLE_NAME + CHAR(32) as TableName
+   FROM INFORMATION_SCHEMA.TABLES T
+  WHERE t.TABLE_TYPE='BASE TABLE'
+ )
+SELECT TableName,OBJECT_NAME(object_id) as StoredProcedure , CHARINDEX(TableName,Definition,0)
+	FROM  sys.sql_modules S
+	Join TableList_CTE on 1=1
+    WHERE objectproperty(object_id,'IsProcedure') = 1
+    AND CHARINDEX(TableName,Definition,0)<>0
+  Order by TableName
+  
+
+
+
+
+Backup Database
+	1.)  To Device
+		○ Backup DATABASE [AdventureWorks] TO [AdventureWorks_Dump_Data] WITH NOUNLOAD, STATS=10, INIT, NOSKIP
+		
+	2.) To Disk
+		○  
+		BACKUP DATABASE [RCS] TO  DISK = N'F:\SQLDataDumps\MSSQLSERVER3\RCS_backup_2013_02_20_020000_6679447.bak' 
+		WITH NOFORMAT, NOINIT,  NAME = N'RCS-Full Database Backup', SKIP, NOREWIND, NOUNLOAD,  COMPRESSION ,STATS = 10
+		GO
+		1
+	3.) Log 
+	Backup DATABASE SSLDBA TO DISK ='C:\SQLDataDumps\SSLDBA_80092012.dat' WITH NOUNLOAD, STATS=10, INIT, NOSKIP
+	keep_cdc 
+	BACKUP LOG [LOmProd] TO  DISK = N'C:\SQLLogDumps\LOmProd_2308201212.TRN' 
+		WITH NOFORMAT, INIT,  NAME = N'LOmProd-Transaction Log  Backup', SKIP, NOREWIND, NOUNLOAD,  STATS = 10
+	Significant 
+
+Restore Database 
+	1.) Check the logical file names
+		From Disk
+		○ RESTORE FILELISTONLY
+		FROM DISK='C:\SQLDataDumps\AdventureWorks_Data_Dump.dat'
+		
+		From Device
+		○ RESTORE FILELISTONLY  FROM AdventureWorks_Dump_Data
+		○ 
+		○ VERIFYONLY
+		○ restore HEADERONLY from disk = ''
+		
+	2.)  Restore Database
+		
+			RESTORE DATABASE [AdventureWorks_Restore] FROM  1
+			DISK = N'C:\SQLDataDumps\AdventureWorks_Data_Dump_11.dat' WITH  FILE = 1,  
+			MOVE N'AdventureWorks_Data' TO N'C:\SQLData\AdventureWorks_Restore.mdf',  
+			MOVE N'AdventureWorks_Log' TO N'C:\SQLLogs\AdventureWorks_Restore_log.LDF',  
+			NOUNLOAD,  REPLACE,  STATS = 10
+		
+		Log 
+		RESTORE LOG [SSLDBA] FROM  DISK = N'C:\SQLDataDumps\SSLDBA_log_80092012.TRN' WITH  
+		FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 10
+		
+
+
+
+Truncating and Shrinking the transaction log 
+	- http://www.sqlbackuprestore.com/truncatingshrinking.htm
+	
+
+Helps check the active transactions in the log file 
+	- dbcc loginfo()
+
+Helps identify the size of the file 
+	- SELECT size/128,type_desc,* FROM SYS.MASTER_FILES WHERE DB_NAME(database_id)='master'
+
+Summary of the database
+	- select name ,state_desc,user_access_desc,recovery_model_desc, log_reuse_wait_desc  from sys.databases 
+
+
+Helps identify the Used and Unused space for the current database
+ 
+- select
+	[FileSizeMB]	=
+		convert(numeric(10,2),round(a.size/128.,2)),
+	[UsedSpaceMB]	=
+		convert(numeric(10,2),round(fileproperty( a.name,'SpaceUsed')/128.,2)) ,
+	[UnusedSpaceMB]	=
+		convert(numeric(10,2),round((a.size-fileproperty( a.name,'SpaceUsed'))/128.,2)) ,
+	[DBFileName]	= a.name ,
+	substring(FileName , 1,1)  PHDrive
+from
+		sysfiles a
+
+DBCC SHRINKFILE ('AdventureWorks_log', 2)
+
+What is the MIN size to shrink 
+	Do a DBCC loginfo()
+	Identify where status =2 
+	Sum the size of the virtual log files the + 8192 bytes for the header
+
+
+42.) 
+CDC
+--LS1
+
+use myxero
+go
+exec sys.sp_cdc_help_change_data_capture -- 18 rows
+
+use xerov3_master
+go
+exec sys.sp_cdc_help_change_data_capture -- 6 rows
+
+
+use subxero3
+go
+exec sys.sp_cdc_help_change_data_capture -- 6 rows
+
+SELECT * FROM cdc.change_tables
+SELECT [retention] , db_name(database_id)   FROM [msdb].[dbo].[cdc_jobs]   WHERE [job_type] = 'cleanup'
+ --To change CDC retention to 10 days 
+   EXEC sp_cdc_change_job @job_type='cleanup', @retention=14400
+
+43.) 
+Use <Database>
+exec sys.sp_cdc_help_change_data_capture 
+
+
+44.) Read Errorlog 
+select message, count(Message)
+from snapshot.sqlerrorlogentry
+where logdate >= getdate() -1
+and servername not like '%I1PH%' -- exclude IAD servers
+and servername not in('553788-O1PHSQ53','553789-O1PHSQ54','581645-O1PHDW01')
+and message not like '%failed to open the explicitly specified database ''model''%'
+and message not like '%informational%'
+and message not like '%killed%'
+group by message
+order by count(Message) desc
+
+
+
+45.) Logshipping - To stnadby and Recovery
+
+
+------------
+-- sequence of commands
+------------
+
+select 1, 'LS STOP' name, enabled, 
+'exec msdb.dbo.sp_stop_job @job_name=''' + NAME + ''';' [STOP_JOB]
+from msdb.dbo.sysjobs
+where name like 'lsrestore%' + @dbtouse
+
+UNION
+
+select 2, 'LS DISABLE' name, enabled, 
+'exec msdb.dbo.sp_update_job @job_name=''' + NAME + ''', @enabled=0;' [DISABLE_JOB]
+from msdb.dbo.sysjobs
+where name like 'lsrestore%' + @dbtouse
+
+UNION
+
+select 3, 'STANDBY DB',NULL, 'exec sp_change_log_shipping_secondary_database @secondary_database = '''+ @dbtouse + '''' + ',@restore_mode = 1;' [CMD_STANDBY]
+
+UNION
+
+select 3, 'RECOVERY DB',NULL, 'exec sp_change_log_shipping_secondary_database @secondary_database = '''+ @dbtouse + '''' + ',@restore_mode = 0;' [CMD_RECOVERY]
+
+
+
+UNION
+
+select 4, 'LS START' name, enabled, 
+'exec msdb.dbo.sp_start_job @job_name=''' + NAME + ''';' [START_JOB]
+from msdb.dbo.sysjobs
+where name like 'lsrestore%' + @dbtouse;
+
+--view history
+select top 300 left(message,22) [msgdate], step_id, step_name, sql_severity, message, run_status 
+from msdb.dbo.sysjobhistory sjh
+where job_id=(select job_id from msdb.dbo.sysjobs where name like 'lsrestore%' + @dbtouse)
+order by instance_id desc
+
+
+
+
+46.) Size of a index 
+
+http://basitaalishan.com/2012/07/06/find-the-size-of-index-in-sql-server/
+SELECT i.[name] AS IndexName
+    ,((SUM(s.[used_page_count]) * 8)) AS IndexSizeGB , i.rowcnt
+FROM sys.dm_db_partition_stats AS s
+INNER JOIN sys.indexes AS i ON s.[object_id] = i.[object_id]
+    AND s.[index_id] = i.[index_id]
+where i.[name] = 'IX_SiteHookupRefresh_K8'
+GROUP BY i.[name]BAC
+ORDER BY i.[name]
+
+
+47.) Create snapshot 
+create database BankFeeds_SS_18062014
+on 
+(name=BankFeeds, filename='W:\MSSQL\Backups\BankFeeds\Snapshot\BankFeeds_SS_18062014.ss') , 
+(name=CDCFile01, filename='W:\MSSQL\Backups\BankFeeds\Snapshot\BankFeeds_SS_18062014_CDC.ss')
+as snapshot of BankFeeds;
+
+
+48.)  Backup database to null 
+BACKUP DATABASE ESAM_NEW TO DISK = 'NUL'
+	'
+49.) Checking for AG failover 
+;WITH cte_HADR AS (SELECT object_name, CONVERT(XML, event_data) AS data
+FROM sys.fn_xe_file_target_read_file('s:\MSSQL11.MSSQLSERVER\MSSQL\Log\AlwaysOn*.xel', null, null, null)
+WHERE object_name = 'error_reported'
+)
+
+SELECT data.value('(/event/@timestamp)[1]','datetime') AS [timestamp],
+	   data.value('(/event/data[@name=''error_number''])[1]','int') AS [error_number],
+	   data.value('(/event/data[@name=''message''])[1]','varchar(max)') AS [message]
+FROM cte_HADR
+WHERE data.value('(/event/data[@name=''error_number''])[1]','int') = 1480
+
+Z
+50.) Restoring from snapshort 
+
+alter database uspaymentgateway set offline with rollback immediate;
+alter database uspaymentgateway set online;
+restore database uspaymentgateway from database_snapshot='USPaymentGateway_SS_20140416_preV27';
+
+
+51.) Change the logical file name 
+ALTER DATABASE [payroll] MODIFY FILE (NAME=N'EXEC sys.sp_cdc_enable_table', NEWNAME=N'CDCFile01')
+
+52.) Execution plan for a SPID 
+SELECT EQP.query_plan, 
+' kill ' + convert(varchaR(10),spid), blocked ,  program_name , nt_username ,s.*
+FROM sys.dm_exec_requests AS ER
+   CROSS APPLY sys.dm_exec_query_plan(ER.plan_handle) AS EQP
+   join sysprocesses S on ER.session_id = s.spid 
+   where s.dbid = db_id('ticketing') 
+
+
+52.) Checking the Logshipping 
+use msdb
+
+use msdb
+
+select Primary_Server, Primary_Database , restore_threshold , Secondary_server , Secondary_Database ,  
+ reverse( substring(REVERSE(last_copied_file),1, charindex('\',REVERSE(last_copied_file),1)-1) ) last_copied_file ,  last_Copied_date_UTC ,  
+ reverse( substring(REVERSE(last_restored_file),1, charindex('\',REVERSE(last_restored_file),1)-1) ) last_restored_file ,    last_Restored_date_UTC 
+  from log_shipping_monitor_secondary
+
+52A) Remove Logshipping 
+https://msdn.microsoft.com/en-us/library/ms189071.aspx
+
+
+53.) AG Group commands 
+http://technet.microsoft.com/en-us/library/dn135319(v=sql.110).aspx
+
+Add the database to the Primary replica
+53.1) SELECT ' ALTER AVAILABILITY GROUP ''' + NAME + ''' ADD DATABASE <DBNAME> ; ' FROM sys.availability_groups_cluster 
+
+
+Secondary - Add db to secondary AG Group 
+
+53.3)  DECLARE @DBName VARCHAr(100) 
+SET @DBName = 'bankmanager' 
+select 'USE [MASTER];  ALTER DATABASE  ' + @DBName  + '  SET HADR AVAILABILITY GROUP = [' + name + ']' from sys.availability_groups
+
+ 
+53.4)  Secondary - Removing DB from AG 
+USE Master ;
+ALTER DATABASE [XeroV3_25] SET HADR OFF;
+
+
+54.) Identify the backups since the last FUll backup for restore
+
+DECLARE @DBName VARCHAr(100),
+	@path varchar(1000) ,
+	@LastbackupDateTime datetime 
+
+	
+SET @DBName = 'bankmanager' 
+SET @path = '\\537693-O1PHSQ35\Backups\BankManager\TransactionLogs' 
+
+SELECT @LastbackupDateTime = DATEADD(mi,-1, MAX(backup_start_date) )
+FROM msdb.dbo.backupset 
+WHERE database_name = @DBName AND type = 'D'
+
+
+SELECT 
+
+'RESTORE LOG [SSLDBA] FROM  DISK = N''' + @path + 
+
+SUBSTRING(
+				msdb.dbo.backupmediafamily.physical_device_name,
+				LEN(msdb.dbo.backupmediafamily.physical_device_name) -  CHARINDEX('\',REVERSE(msdb.dbo.backupmediafamily.physical_device_name) ,0) +1 ,
+				LEN(msdb.dbo.backupmediafamily.physical_device_name))
+
++ ''''  +  ' WITH  NORECOVERY;' ,
+ CONVERT(CHAR(100), SERVERPROPERTY('Servername')) AS Server,
+ msdb.dbo.backupset.database_name,
+ msdb.dbo.backupset.backup_start_date,
+ msdb.dbo.backupset.backup_finish_date,
+ msdb.dbo.backupset.expiration_date,
+ CASE msdb..backupset.type
+ WHEN 'D' THEN 'Database'
+ WHEN 'L' THEN 'Log'
+ ElSE type
+ END AS backup_type,
+ msdb.dbo.backupset.backup_size,
+ msdb.dbo.backupmediafamily.logical_device_name,
+ msdb.dbo.backupmediafamily.physical_device_name,
+ msdb.dbo.backupset.name AS backupset_name,
+ msdb.dbo.backupset.description
+FROM msdb.dbo.backupmediafamily
+ INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id
+WHERE (CONVERT(datetime, msdb.dbo.backupset.backup_start_date, 102) >= GETDATE() - 7)
+AND database_name = @DBName
+AND backup_start_date > @LastbackupDateTime	
+						
+
+ORDER BY
+ msdb.dbo.backupset.database_name,
+ msdb.dbo.backupset.backup_finish_date 
+
+
+55.) View the users and permissions associated to a DB role 
+
+WITH    perms_cte as
+(
+        select USER_NAME(p.grantee_principal_id) AS principal_name,
+                dp.principal_id,
+                dp.type_desc AS principal_type_desc,
+                p.class_desc,
+                OBJECT_NAME(p.major_id) AS object_name,
+                p.permission_name,
+                p.state_desc AS permission_state_desc
+        from    sys.database_permissions p
+        inner   JOIN sys.database_principals dp
+        on     p.grantee_principal_id = dp.principal_id
+)
+--role members
+SELECT rm.member_principal_name, rm.principal_type_desc, p.class_desc, 
+    p.object_name, p.permission_name, p.permission_state_desc,rm.role_name
+FROM    perms_cte p
+right outer JOIN (
+    select role_principal_id, dp.type_desc as principal_type_desc, 
+   member_principal_id,user_name(member_principal_id) as member_principal_name,
+   user_name(role_principal_id) as role_name--,*
+    from    sys.database_role_members rm
+    INNER   JOIN sys.database_principals dp
+    ON     rm.member_principal_id = dp.principal_id
+) rm
+ON     rm.role_principal_id = p.principal_id
+where rm.role_name ='AUTax_Read_Only'
+order by 1
+ --=============================================================================================================================================
+55A.) Orphand users in A DB
+
+create table #loginmappings(  
+ LoginName  nvarchar(128) NULL,  
+ DBName     nvarchar(128) NULL,  
+ UserName   nvarchar(128) NULL,  
+ AliasName  nvarchar(128) NULL 
+)  
+ 
+insert into #loginmappings
+EXEC master..sp_msloginmappings
+ 
+select ' Sp_change_users_login ''update_one'' , ''' + username + ''' , ''' + LoginName + '''' , *  from #loginmappings
+ where DBName  = 'XeroReportingPractice' 
+ and UserName in 
+( 
+'DataConsoleReader'
+,'DataConsoleWriter'
+,'Ignite'
+,'ReportingPracticeBackChannel_User'
+,'ReportingPracticeWeb_User'
+) 
+ --=============================================================================================================================================
+
+56.) AG group status  
+
+SELECT 
+	ARCS.replica_server_name 
+	,HARS.Role_Desc 
+	,RS.Database_ID  
+	,RCS.database_name 
+	,RS.synchronization_state_desc 
+	,RS.synchronization_health_desc 
+	,RS.database_state_desc  
+	,RS.recovery_lsn
+	,RS.truncation_lsn
+	,RS.last_sent_lsn
+	,RS.last_sent_time
+	,RS.last_received_lsn
+	,RS.last_received_time
+	,RS.last_hardened_lsn
+	,RS.last_hardened_time
+	,RS.last_redone_lsn
+	,RS.last_redone_time
+	,RS.log_send_queue_size
+	,RS.log_send_rate
+	,RS.redo_queue_size
+	,RS.redo_rate
+	,RS.filestream_send_rate
+	,RS.end_of_log_lsn
+	,RS.last_commit_lsn
+	,RS.last_commit_time
+	,RS.low_water_mark_for_ghosts
+
+FROM sys.dm_hadr_database_replica_states RS
+JOIN  sys.dm_hadr_database_replica_cluster_states RCS ON 
+	RS.replica_id = RCS.replica_id AND
+		RS.group_database_id = RCS.group_database_id
+JOIN Sys.dm_hadr_availability_replica_cluster_states ARCS ON
+		ARCS.replica_id =  RS.replica_id	
+JOIN Sys.dm_hadr_availability_replica_states HARS ON 
+	RS.replica_id = HARS.replica_id
+
+ORDER BY  RCS.database_name ,HARS.Role 
+
+
+
+57.) Adding users
+1.) FIND THE SERVERS WITHOUT THE USER DataExplorerWriter
+
+
+EX. IF NOT EXISTS (sELECT 1 FROM SYSLOGINS WHERE NAME = 'DataExplorerWriter') SELECT @@SERVERNAME 
+
+CREATE THE DataExplorerWriter LOGIN ON MISSING SERVERS 
+
+553788-O1PHSQ53
+553789-O1PHSQ54
+533181-O1VMSQ26
+
+
+-- Login: DataExplorerWriter
+CREATE LOGIN [DataExplorerWriter] WITH PASSWORD = 0x020066A400FAFA085FB65D8B3B5846C6567B822A329758EEE4927B1D912E31CCF3C6E4E37C6CB1016573538ABD2C4B738EB711782FFB252AA0B48F7E642710F7301C4A7E33EC HASHED, SID = 0x3EBC7F74E71C1047BCEF0B84358080CB, DEFAULT_DATABASE = [master], CHECK_POLICY = ON, CHECK_EXPIRATION = OFF
+
+
+58.) CREATE THE ROLE AND ASSIGN THE USE TO ROLE 
+
+USE [XeroV3_Master]
+GO
+CREATE ROLE [DataExplorerWriter_Role] AUTHORIZATION [dbo]
+GO
+USE [XeroV3_Master]
+GO
+ALTER ROLE [DataExplorerWriter_Role] ADD MEMBER [DataExplorerWriter]
+GO
+ 
+
+
+59.) sCHEDULE EXECUTION
+http://www.mssqltips.com/sqlservertip/2561/querying-sql-server-agent-job-information/
+
+SELECT 
+    [schedule_uid] AS [ScheduleID]
+    , SS.[name] AS [ScheduleName]
+    , CASE SS.[enabled]
+        WHEN 1 THEN 'Yes'
+        WHEN 0 THEN 'No'
+      END AS [IsEnabled]
+    , CASE 
+        WHEN [freq_type] = 64 THEN 'Start automatically when SQL Server Agent starts'
+        WHEN [freq_type] = 128 THEN 'Start whenever the CPUs become idle'
+        WHEN [freq_type] IN (4,8,16,32) THEN 'Recurring'
+        WHEN [freq_type] = 1 THEN 'One Time'
+      END [ScheduleType]
+    , CASE [freq_type]
+        WHEN 1 THEN 'One Time'
+        WHEN 4 THEN 'Daily'
+        WHEN 8 THEN 'Weekly'
+        WHEN 16 THEN 'Monthly'
+        WHEN 32 THEN 'Monthly - Relative to Frequency Interval'
+        WHEN 64 THEN 'Start automatically when SQL Server Agent starts'
+        WHEN 128 THEN 'Start whenever the CPUs become idle'
+      END [Occurrence]
+    , CASE [freq_type]
+        WHEN 4 THEN 'Occurs every ' + CAST([freq_interval] AS VARCHAR(3)) + ' day(s)'
+        WHEN 8 THEN 'Occurs every ' + CAST([freq_recurrence_factor] AS VARCHAR(3)) 
+                    + ' week(s) on '
+                    + CASE WHEN [freq_interval] & 1 = 1 THEN 'Sunday' ELSE '' END
+                    + CASE WHEN [freq_interval] & 2 = 2 THEN ', Monday' ELSE '' END
+                    + CASE WHEN [freq_interval] & 4 = 4 THEN ', Tuesday' ELSE '' END
+                    + CASE WHEN [freq_interval] & 8 = 8 THEN ', Wednesday' ELSE '' END
+                    + CASE WHEN [freq_interval] & 16 = 16 THEN ', Thursday' ELSE '' END
+                    + CASE WHEN [freq_interval] & 32 = 32 THEN ', Friday' ELSE '' END
+                    + CASE WHEN [freq_interval] & 64 = 64 THEN ', Saturday' ELSE '' END
+        WHEN 16 THEN 'Occurs on Day ' + CAST([freq_interval] AS VARCHAR(3)) 
+                     + ' of every '
+                     + CAST([freq_recurrence_factor] AS VARCHAR(3)) + ' month(s)'
+        WHEN 32 THEN 'Occurs on '
+                     + CASE [freq_relative_interval]
+                        WHEN 1 THEN 'First'
+                        WHEN 2 THEN 'Second'
+                        WHEN 4 THEN 'Third'
+                        WHEN 8 THEN 'Fourth'
+                        WHEN 16 THEN 'Last'
+                       END
+                     + ' ' 
+                     + CASE [freq_interval]
+                        WHEN 1 THEN 'Sunday'
+                        WHEN 2 THEN 'Monday'
+                        WHEN 3 THEN 'Tuesday'
+                        WHEN 4 THEN 'Wednesday'
+                        WHEN 5 THEN 'Thursday'
+                        WHEN 6 THEN 'Friday'
+                        WHEN 7 THEN 'Saturday'
+                        WHEN 8 THEN 'Day'
+                        WHEN 9 THEN 'Weekday'
+                        WHEN 10 THEN 'Weekend day'
+                       END
+                     + ' of every ' + CAST([freq_recurrence_factor] AS VARCHAR(3)) 
+                     + ' month(s)'
+      END AS [Recurrence]
+    , CASE [freq_subday_type]
+        WHEN 1 THEN 'Occurs once at ' 
+                    + STUFF(
+                 STUFF(RIGHT('000000' + CAST([active_start_time] AS VARCHAR(6)), 6)
+                                , 3, 0, ':')
+                            , 6, 0, ':')
+        WHEN 2 THEN 'Occurs every ' 
+                    + CAST([freq_subday_interval] AS VARCHAR(3)) + ' Second(s) between ' 
+                    + STUFF(
+                   STUFF(RIGHT('000000' + CAST([active_start_time] AS VARCHAR(6)), 6)
+                                , 3, 0, ':')
+                            , 6, 0, ':')
+                    + ' & ' 
+                    + STUFF(
+                    STUFF(RIGHT('000000' + CAST([active_end_time] AS VARCHAR(6)), 6)
+                                , 3, 0, ':')
+                            , 6, 0, ':')
+        WHEN 4 THEN 'Occurs every ' 
+                    + CAST([freq_subday_interval] AS VARCHAR(3)) + ' Minute(s) between ' 
+                    + STUFF(
+                   STUFF(RIGHT('000000' + CAST([active_start_time] AS VARCHAR(6)), 6)
+                                , 3, 0, ':')
+                            , 6, 0, ':')
+                    + ' & ' 
+                    + STUFF(
+                    STUFF(RIGHT('000000' + CAST([active_end_time] AS VARCHAR(6)), 6)
+                                , 3, 0, ':')
+                            , 6, 0, ':')
+        WHEN 8 THEN 'Occurs every ' 
+                    + CAST([freq_subday_interval] AS VARCHAR(3)) + ' Hour(s) between ' 
+                    + STUFF(
+                    STUFF(RIGHT('000000' + CAST([active_start_time] AS VARCHAR(6)), 6)
+                                , 3, 0, ':')
+                            , 6, 0, ':')
+                    + ' & ' 
+                    + STUFF(
+                    STUFF(RIGHT('000000' + CAST([active_end_time] AS VARCHAR(6)), 6)
+                                , 3, 0, ':')
+                            , 6, 0, ':')
+      END [Frequency]
+    , STUFF(
+            STUFF(CAST([active_start_date] AS VARCHAR(8)), 5, 0, '-')
+                , 8, 0, '-') AS [ScheduleUsageStartDate]
+    , STUFF(
+            STUFF(CAST([active_end_date] AS VARCHAR(8)), 5, 0, '-')
+                , 8, 0, '-') AS [ScheduleUsageEndDate]
+    , SS.[date_created] AS [ScheduleCreatedOn]
+    , SS.[date_modified] AS [ScheduleLastModifiedOn]
+FROM [msdb].[dbo].[sysschedules] SS
+JOIN  sysjobschedules SJC ON SS.schedule_id = SJC.schedule_id
+JOIN sysjobs J ON SJC.JOB_ID = J.job_id
+WHERE J.name like 'Backup Diff User Databases'
+ORDER BY [ScheduleName]
+
+Use msdb
+Select * from sysjobs where name like 'Backup Diff User Databases'
+select * from sysjobschedules where job_id in ('5C95DF4A-5AB3-4C6A-87C9-222003A0A592' ) 
+Select * from sysschedules where schedule_id IN ( 81 ,210) 
+
+
+
+
+60.) Find a DB role 
+Select 
+  * 
+From
+  XeroV3_0..sysusers
+Where
+  issqlrole = 1
+
+
+
+
+61.) Last restored file
+select bmf.physical_device_name,rh.restore_date from msdb.dbo.restorehistory rh 
+inner join msdb.dbo.backupset bs on bs.backup_set_id=rh.backup_set_id
+INNER JOIN msdb.dbo.backupmediafamily bmf ON bmf.media_set_id = bs.media_set_id
+where  bmf.physical_device_name like '%xeroV3_11%'
+order by 2  desc
+
+62.) Restore File to a point intime and set to standby
+
+
+--select @@servername
+
+-- ====================================================================================================================
+-- version 3
+-- OK
+-- recovers when stopat point is met
+-- ====================================================================================================================
+
+set nocount on
+
+--exec xp_dirtree 'W:\Restored Files\Trans_Logs\',1,1
+
+-- http://www.patrickkeisler.com/2012/11/how-to-use-xpdirtree-to-list-all-files.html
+-- modifed (alot)
+---------------------------------------------------------------------
+--declare @logdir varchar(200) = 'W:\restore_shard11\trnlogs'
+declare @logdir varchar(200) = '\\172.25.16.204\X\XeroV3_11\Transactionlogs'
+declare @db varchar(100) = 'Xerov3_11'
+declare @stopat varchar(100)= '2014-07-31 12:00:00.000'
+declare @standbyfile nvarchar(200)='U:\MSSQL\Data\XeroV3_11\xerov3_11.tuf'
+--declare @stopat varchar(100)= getdate()+1
+declare @restore_command nvarchar(1000)
+---------------------------------------------------------------------
+IF OBJECT_ID('tempdb..#DirectoryTree') IS NOT NULL
+      DROP TABLE #DirectoryTree;
+
+CREATE TABLE #DirectoryTree (
+       id int IDENTITY(1,1)
+      ,subdirectory nvarchar(512)
+      ,depth int
+      ,isfile bit);
+
+INSERT #DirectoryTree (subdirectory,depth,isfile)
+--EXEC master.sys.xp_dirtree 'W:\Restored Files\Trans_Logs',1,1;
+EXEC master.sys.xp_dirtree @logdir,1,1;
+--go
+declare @cnt int=0
+declare mycursor cursor for
+	select 
+	case
+		--when  RIGHT(subdirectory,4)='.BAK' then 'use [master];restore database [' + @db + '] from disk=''' + convert(nvarchar(100),@logdir) + '\' + convert(nvarchar(100),dt.subdirectory) + ''' with stats=5,replace, recovery, stopat=''' + convert(nvarchar(100),@stopat) + ''';' 
+		when  RIGHT(subdirectory,4)='.TRN' then 'use [master];restore log [' + @db + '] from disk=''' + convert(nvarchar(100),@logdir) + '\' + convert(nvarchar(100),dt.subdirectory) + ''' with stats=5, standby=N''' + @standbyfile + ''', stopat=''' + convert(nvarchar(100),@stopat) + ''';' 
+	end as restore_command
+	from #DirectoryTree dt
+	--where RIGHT(subdirectory,4) = '.TRN'
+	--where substring(dt.subdirectory,10,14) > '20140129105107'
+	where subdirectory like '%' + @db + '%'
+	order by 1 asc
+
+OPEN mycursor   
+FETCH NEXT FROM mycursor INTO @restore_command 
+
+WHILE @@FETCH_STATUS=0
+BEGIN
+	PRINT @restore_command
+	set @cnt=@cnt+1
+	FETCH NEXT FROM mycursor INTO @restore_command 
+END
+
+CLOSE mycursor
+DEALLOCATE mycursor
+
+print @cnt
+
+
+63.) CDC Retention 
+Select DB_name (database_id) DBname , retention fr
+om Msdb.dbo.cdc_jobs 
+
+
+64.)  Get the backup frile for restore since the last backyup
+
+DECLARE 
+@DBNmae varchar(100) = 'TICKETING'
+,@From_Last_backupType VARCHAR(2) = 'I' -- CAN BE ONE OF (D= FULL, L = Log , I = DIFF)
+,@LookFor_backupType VARCHAR(2) = 'L' -- CAN BE ONE OF (D= FULL, L = Log , I = DIFF)
+
+
+, @Backup_Source varchar(1000) = '\\172.25.16.117\Backups\Ticketing\Diff'
+, @Backup_Destination varchar(1000) = 'X:\Ticketing\Diff'
+
+
+Select  TOP 1 
+ CASE msdb..backupset.type  
+       WHEN 'D' THEN 'Database'  
+       WHEN 'L' THEN 'Log' 
+	   WHEN 'I' THEN 'DIFF'
+   END AS backup_type  , backup_start_date 
+
+						FROM msdb..backupset
+						where backupset.type  = @From_Last_backupType
+						and  database_name = @DBNmae
+						ORDER BY backup_start_date DESC
+ 
+SELECT  
+  ' robocopy ' + @Backup_Source + '   ' + @Backup_Destination  + 
+
+ substring( backupmediafamily.physical_device_name 
+				, len(backupmediafamily.physical_device_name) - 
+				  charindex('\',reverse( backupmediafamily.physical_device_name),1)	+2
+				,len(backupmediafamily.physical_device_name)
+			)
+
+   
+   , CONVERT(CHAR(100), SERVERPROPERTY('Servername')) AS Server, 
+   msdb.dbo.backupset.database_name,  
+   msdb.dbo.backupset.backup_start_date,  
+   msdb.dbo.backupset.backup_finish_date, 
+   msdb.dbo.backupset.expiration_date 
+   ,CASE msdb..backupset.type  
+       WHEN 'D' THEN 'Database'  
+       WHEN 'L' THEN 'Log' 
+	   WHEN 'I' THEN 'DIFF'
+   END AS backup_type
+  
+  
+   
+FROM   msdb.dbo.backupmediafamily  
+   INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id  
+WHERE  (CONVERT(datetime, msdb.dbo.backupset.backup_start_date, 102) >= GETDATE() - 7)  
+AND database_name = @DBNmae
+-- AND backup_start_date>= 
+AND backup_finish_date>= 
+					(
+						Select TOP 1 
+							 backup_start_date 
+							
+						FROM msdb..backupset
+						where backupset.type  = @From_Last_backupType
+						and  database_name = @DBNmae
+						ORDER BY backup_start_date DESC 
+					)
+
+--AND backupset.type  = @LookFor_backupType				
+ORDER BY  
+   msdb.dbo.backupset.database_name, 
+   msdb.dbo.backupset.backup_finish_date 
+
+
+
+
+--Select * from msdb..backupset
+
+
+65.) Get Files statistics 
+http://blog.sqlauthority.com/2011/01/08/sql-server-get-file-statistics-using-fn_virtualfilestats/
+
+SELECT DB_NAME(vfs.DbId) DatabaseName, mf.name,
+mf.physical_name, vfs.BytesRead, vfs.BytesWritten,
+vfs.IoStallMS, vfs.IoStallReadMS, vfs.IoStallWriteMS,
+vfs.NumberReads, vfs.NumberWrites,
+(Size*8)/1024 Size_MB
+FROM ::fn_virtualfilestats(NULL,NULL) vfs
+INNER JOIN sys.master_files mf ON mf.database_id = vfs.DbId
+AND mf.FILE_ID = vfs.FileId
+
+66.) Index Size 
+
+SELECT
+    i.name                  AS IndexName,
+    ((SUM(s.used_page_count) * 8)*1.00)/1024   AS IndexSizeMB
+FROM sys.dm_db_partition_stats  AS s 
+JOIN sys.indexes                AS i
+ON s.[object_id] = i.[object_id] AND s.index_id = i.index_id
+WHERE s.[object_id] = object_id('yodlee.SiteHookupRefresh')
+GROUP BY i.name
+ORDER BY i.name
+
+
+67.) User , Role object permission
+WITH    perms_cte as
+(
+       select USER_NAME(p.grantee_principal_id) AS principal_name,
+               dp.principal_id,
+               dp.type_desc AS principal_type_desc,
+               p.class_desc,
+               OBJECT_NAME(p.major_id) AS object_name,
+               p.permission_name,
+               p.state_desc AS permission_state_desc
+       from    sys.database_permissions p
+       inner   JOIN sys.database_principals dp
+       on     p.grantee_principal_id = dp.principal_id
+)
+--role members
+SELECT rm.member_principal_name, rm.principal_type_desc, p.class_desc, 
+   p.object_name, p.permission_name, p.permission_state_desc,rm.role_name
+FROM    perms_cte p
+right outer JOIN (
+   select role_principal_id, dp.type_desc as principal_type_desc, 
+  member_principal_id,user_name(member_principal_id) as member_principal_name,
+  user_name(role_principal_id) as role_name--,*
+   from    sys.database_role_members rm
+   INNER   JOIN sys.database_principals dp
+   ON     rm.member_principal_id = dp.principal_id
+) rm
+ON     rm.role_principal_id = p.principal_id
+where
+ --rm.role_name ='XeroWeb_Role'
+ object_name like 'bankaccountsettings%'
+--and permission_name='select'
+ --member_principal_name='XeroDBUser'
+order by 1
+
+
+--GRANT SELECT,UPDATE,INSERT ON DBO.BankAccountSettings TO XeroWeb_Role
+
+
+68.) Identify a user from a group 
+select ' create table #Temp_NTLogins ( AccountName varchar(500) ,type char(10) , Privilege varchar(20) , MappedLogin Varchar(500),PermissionPath varchar(500))'
+select ' insert into #Temp_NTLogins exec xp_logininfo ' + '''' + name + '''' + ',' + '''members''' ,* from syslogins where isntgroup =1
+
+
+
+69.) Change the Extended Event 
+
+ALTER EVENT SESSION [Xero_Deadlock_Report]
+ON SERVER
+STATE = stop;
+go
+ALTER EVENT SESSION [Xero_Deadlock_Report] ON SERVER 
+DROP EVENT sqlserver.xml_deadlock_report
+ WITH (MAX_MEMORY=10 MB) 
+ALTER EVENT SESSION [Xero_Deadlock_Report] ON SERVER 
+ADD EVENT sqlserver.xml_deadlock_report
+GO
+ALTER EVENT SESSION [Xero_Deadlock_Report]
+ON SERVER
+STATE = start;
+go
+
+
+70.) Size saving with compression 
+
+
+EXEC sp_estimate_data_compression_savings 
+    @schema_name = 'yodlee', 
+    @object_name = 'SiteHookupRefresh',
+    @index_id = 39, 
+    @partition_number = NULL, 
+    @data_compression = 'PAGE' ; 
+
+	3016280
+
+ SELECT
+    i.name                  AS IndexName,
+    ((SUM(s.used_page_count) * 8)*1.00)/1024   AS IndexSizeMB
+FROM sys.dm_db_partition_stats  AS s 
+JOIN sys.indexes                AS i
+ON s.[object_id] = i.[object_id] AND s.index_id = i.index_id
+WHERE s.[object_id] = object_id('yodlee.SiteHookupRefresh')
+GROUP BY i.name
+
+
+71.) CDC errors
+
+SELECT  se.*,
+        er.*
+FROM    sys.dm_cdc_log_scan_sessions (NOLOCK) se
+LEFT OUTER JOIN sys.dm_cdc_errors (NOLOCK) er ON er.session_id = se.session_id
+WHERE   se.error_count > 0
+
+
+71.) Identify FK which are not set as indexes 
+
+\/* Foreign keys */
+;WITH FKTable
+as(
+    SELECT schema_name(o.schema_id) AS 'parent_schema_name',object_name(FKC.parent_object_id) 'parent_table_name',
+    object_name(constraint_object_id) AS 'constraint_name',schema_name(RO.Schema_id) AS 'referenced_schema',object_name(referenced_object_id) AS 'referenced_table_name',
+    (SELECT '['+col_name(k.parent_object_id,parent_column_id) +']' AS [data()]
+      FROM sys.foreign_key_columns (NOLOCK) AS k
+      INNER JOIN sys.foreign_keys (NOLOCK)
+      ON k.constraint_object_id =object_id
+      AND k.constraint_object_id =FKC.constraint_object_id
+      ORDER BY constraint_column_id
+      FOR XML PATH('')
+    ) AS 'parent_colums',
+    (SELECT '['+col_name(k.referenced_object_id,referenced_column_id) +']' AS [data()]
+      FROM sys.foreign_key_columns (NOLOCK) AS k
+      INNER JOIN sys.foreign_keys (NOLOCK)
+      ON k.constraint_object_id =object_id
+      AND k.constraint_object_id =FKC.constraint_object_id
+      ORDER BY constraint_column_id
+      FOR XML PATH('')
+    ) AS 'referenced_columns'
+  FROM sys.foreign_key_columns FKC (NOLOCK)
+  INNER JOIN sys.objects o (NOLOCK) ON FKC.parent_object_id = o.object_id
+  INNER JOIN sys.objects RO (NOLOCK) ON FKC.referenced_object_id = RO.object_id
+  WHERE o.object_id in (SELECT object_id FROM sys.objects (NOLOCK) WHERE type ='U') AND RO.object_id in (SELECT object_id FROM sys.objects (NOLOCK) WHERE type ='U')
+  group by o.schema_id,RO.schema_id,FKC.parent_object_id,constraint_object_id,referenced_object_id
+),
+/* Index Columns */
+IndexColumnsTable AS
+(
+  SELECT distinct schema_name (o.schema_id) AS 'schema_name',object_name(o.object_id) AS TableName,
+  (SELECT case key_ordinal when 0 then NULL else '['+col_name(k.object_id,column_id) +']' end AS [data()]
+    FROM sys.index_columns (NOLOCK) AS k
+    WHERE k.object_id = i.object_id
+    AND k.index_id = i.index_id
+    ORDER BY key_ordinal, column_id
+    FOR XML PATH('')
+  ) AS cols
+  FROM sys.indexes (NOLOCK) AS i
+  INNER JOIN sys.objects o (NOLOCK) ON i.object_id =o.object_id
+  INNER JOIN sys.index_columns ic (NOLOCK) ON ic.object_id =i.object_id AND ic.index_id =i.index_id
+  INNER JOIN sys.columns c (NOLOCK) ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+  WHERE i.object_id in (SELECT object_id FROM sys.objects (NOLOCK) WHERE type ='U') AND i.index_id > 0
+  group by o.schema_id,o.object_id,i.object_id,i.Name,i.index_id,i.type
+)
+SELECT
+  fk.parent_schema_name AS SchemaName,
+  fk.parent_table_name AS TableName,
+  fk.constraint_name AS ConstraintName,
+  fk.referenced_schema AS ReferencedSchemaName,
+  fk.referenced_table_name AS ReferencedTableName
+FROM FKTable fk
+WHERE (SELECT COUNT(*) AS NbIndexes  FROM IndexColumnsTable ict  WHERE fk.parent_schema_name = ict.schema_name AND fk.parent_table_name = ict.TableName     
+AND fk.parent_colums = left(ict.cols,LEN(FK.PARENT_COLUMS))
+  ) = 0
+
+
+72.) Find the plan for a query 
+
+SELECT top 100 cp.objtype AS ObjectType,
+OBJECT_NAME(st.objectid,st.dbid) AS ObjectName,
+cp.usecounts AS ExecutionCount,
+st.TEXT AS QueryText,
+qp.query_plan AS QueryPlan, cp.plan_handle ,
+Db_Name(st.dbid) DBName 
+FROM sys.dm_exec_cached_plans AS cp
+CROSS APPLY sys.dm_exec_query_plan(cp.plan_handle) AS qp
+CROSS APPLY sys.dm_exec_sql_text(cp.plan_handle) AS st
+where 
+cp.objtype = 'Proc' -- 'adhoc' 
+and
+st.TEXT like '%Invoice_GetHistoricInvoiceBalances%' 
+--OBJECT_NAME(st.objectid,st.dbid) = 'Reporting_GetJournals'
+--and Db_Name(st.dbid) = 'Xerov3_38'
+
+
+select top 10  plan_handle, creation_time, last_execution_time, execution_count, qt.text
+FROM 
+   sys.dm_exec_query_stats qs
+   CROSS APPLY sys.dm_exec_sql_text (qs.[sql_handle]) AS qt
+where qt.text like '%@PagedInvoices%'
+and  Db_Name(qt.dbid) = 'Xerov3_115'
+
+DBCC FREEPROCCACHE (plan_handle_id_goes_here)
+
+73.) Index and include columns 
+
+--------------------------------------NEW -------------------------------------------------------------
+
+IF OBJECT_ID('TEMPDB..#TBL_INDEXES') IS NOT NULL Drop table #TBL_INDEXES
+create table #TBL_INDEXES ( IID INT identity(1,1) , TBName varchar(100) ,IndexName varchar(200) ,IndexType varchar(100) ,
+IndexColumns VARCHAR(400) , IndexColumnsInclude varchar(400)) 
+
+
+DECLARE @TBName varchar(100)= 'INVOICE'
+
+INSERT INTO  #TBL_INDEXES ( TBName , IndexName , IndexType ) 
+SELECT Object_name(SI.Object_ID) TBName 
+			, SI.name IndexName 
+			,SI.Type_Desc 
+			---, is_included_column 
+FROM sys.indexes SI
+WHERE SI.Object_ID  = object_id(@TBName)
+
+
+Select  TI.IndexName , 
+		TI.IndexType , 
+		--TI.IndexColumns,IndexColumnsInclude ,
+		ICol.IndexColumnsN , 
+		InCol.IndexIncludeColumnsN , 
+		IND.IndexSizeMB , 
+		I.Fill_Factor ,
+		I.Filter_Definition 
+
+from #TBL_INDEXES TI
+cross apply
+(
+	select STUFF((
+					(SELECT CASE WHEN is_included_column = 0  THEN ','+ Col_name (SI.Object_ID, SIC.Column_ID) ELSE '' END  						
+					From sys.indexes SI
+					JOIN sys.index_columns SIC ON 
+							SI.object_id = SIC.object_id AND 
+							SI.index_id = SIC.index_id
+	
+					WHERE Object_name(SI.Object_ID)  = TI.TBName AND 
+							SI.name = TI.IndexName AND 
+							SI.name =  TI.IndexName
+					ORDER BY SIC.Key_Ordinal
+					FOR XML PATH(''))
+				), 1, 1, '') AS IndexColumnsN
+) ICol
+
+cross apply
+(
+	select STUFF((					
+					(SELECT  CASE WHEN is_included_column = 1  THEN   ',' + Col_name (SI.Object_ID, SIC.Column_ID) ELSE '' END  	   
+					From sys.indexes SI
+					JOIN sys.index_columns SIC ON 
+							SI.object_id = SIC.object_id AND 
+							SI.index_id = SIC.index_id
+	
+					WHERE Object_name(SI.Object_ID)  = TI.TBName AND 
+							SI.name = TI.IndexName AND 
+							SI.name =  TI.IndexName
+					ORDER BY SIC.Key_Ordinal
+					FOR XML PATH(''))
+				), 1, 1, '') AS IndexIncludeColumnsN
+) InCol
+
+JOIN sys.indexes I ON TI.IndexName = I.name 
+	and I.Object_ID = object_id(@TBName)
+JOIN 	(
+			 SELECT
+			i.name                  AS IndexName,
+			((SUM(s.used_page_count) * 8)*1.00)/1024   AS IndexSizeMB
+			FROM sys.dm_db_partition_stats  AS s 
+			JOIN sys.indexes                AS i
+			ON s.[object_id] = i.[object_id] AND s.index_id = i.index_id
+			WHERE s.[object_id] = object_id(@TBName)
+			GROUP BY i.name
+		) IND ON IND.IndexName = TI.IndexName
+
+--================================================ OLD
+
+
+DECLARE @TBL_INDEXES table ( IID INT identity(1,1) , TBName varchar(100) ,IndexName varchar(200) ,IndexType varchar(100) , IndexColumns VARCHAR(400) , IndexColumnsInclude varchar(400)) 
+DECLARE @TBName varchar(100)= 'invoice'
+
+INSERT INTO  @TBL_INDEXES ( TBName , IndexName , IndexType ) 
+SELECT Object_name(SI.Object_ID) TBName 
+			, SI.name IndexName 
+			,SI.Type_Desc 
+			---, is_included_column 
+FROM sys.indexes SI
+WHERE SI.Object_ID  = object_id(@TBName)
+
+DECLARE 
+	@RowCnt int = 0 
+	,@LoopCnt int  =1 
+	,@ID int = 0
+	,@COLUMNS varchar(400) = ''
+	,@ColumnInclude varchar(400) = ''
+	,@INXname varchar(200) = ''	
+
+SET @LoopCnt = 1 
+SELECT @RowCnt  = COUNT(1) FROM @TBL_INDEXES 
+
+WHILE @LoopCnt <= @RowCnt
+BEGIN
+	
+	SELECT top  1 @INXname = IndexName , @ID = IID FROM @TBL_INDEXES WHERE IID > @ID order by IID 
+
+	SELECT @COLUMNS = @COLUMNS +  CASE WHEN is_included_column = 0  THEN   ', ' + Col_name (SI.Object_ID, SIC.Column_ID) ELSE '' END  	
+	, @ColumnInclude = @ColumnInclude 	+  CASE WHEN is_included_column = 1  THEN   ', ' + Col_name (SI.Object_ID, SIC.Column_ID) ELSE '' END  	   
+	From sys.indexes SI
+	JOIN sys.index_columns SIC ON SI.object_id = SIC.object_id AND SI.index_id = SIC.index_id
+	JOIN @TBL_INDEXES I ON Object_name(SI.Object_ID)  = I.TBName AND SI.name = I.IndexName
+	WHERE SI.name = @INXname 
+	ORDER BY SIC.Key_Ordinal
+
+	
+
+	UPDATE INX
+	SET IndexColumns = substring(@COLUMNS ,2, len(@COLUMNS))	
+	,IndexColumnsInclude = substring(@ColumnInclude ,2, len(@ColumnInclude))		
+	FROM @TBL_INDEXES INX
+	WHERE IID = @ID 
+
+	SET @COLUMNS = ''
+	SET @ColumnInclude = ''	
+  
+	SET @LoopCnt  = @LoopCnt  +1 
+END 
+SELECT TI.IndexName , 
+		TI.IndexType , 
+		TI.IndexColumns,IndexColumnsInclude ,
+		IND.IndexSizeMB , 
+		I.Fill_Factor ,
+		I.Filter_Definition 
+FROM @TBL_INDEXES TI
+JOIN sys.indexes I ON TI.IndexName = I.name 
+	and I.Object_ID = object_id(@TBName)
+JOIN 	(
+			 SELECT
+			i.name                  AS IndexName,
+			((SUM(s.used_page_count) * 8)*1.00)/1024   AS IndexSizeMB
+			FROM sys.dm_db_partition_stats  AS s 
+			JOIN sys.indexes                AS i
+			ON s.[object_id] = i.[object_id] AND s.index_id = i.index_id
+			WHERE s.[object_id] = object_id(@TBName)
+			GROUP BY i.name
+		) IND ON IND.IndexName = TI.IndexName
+
+
+
+
+
+
+74.) Check data over shards
+if object_id('tempdb..#TEMP_SERVER') is not null drop table #TEMP_SERVER
+CREATE TABLE #TEMP_SERVER( SVRNAME VARCHAR(100) , DBName Varchar(100)  ,TableName varchar(100) ,CNT INT) 
+
+INSERT INTO #TEMP_SERVER ( SVRNAME,DBName ,TableName , cnt)  
+EXEC sp_msforeachdb ' if ''?'' like  ''xerov3_%'' 
+begin 
+use [?]
+SELECT @@SERVERNAME , ''[?]'',  Object_name(ID) , Rowcnt FROM [?]..SYSINDEXES WHERE id = object_id (''JournalLine'') and indid =1 
+end '
+
+Select * from #TEMP_SERVER order by DBNAme  --where DBName = 'Xerov3_15' 
+
+
+
+75.) UTC conversion 
+
+UTC conversion
+--convert UTCdate to now
+select 
+getdate() localdate, 
+getutcdate() utcdate, 
+datediff(hour,getdate(), getutcdate()) offset,
+datediff(hour,getutcdate(), getdate()) offset
+
+select dateadd(hour, datediff(hour,getdate(), getutcdate()), getdate() )  local_to_UTC -- OK
+
+select dateadd(hour, datediff(hour,getutcdate(), getdate()), getutcdate() )  UTC_to_Local
+
+76.) Shard size
+
+drop table #Temp_XerV3DB
+CREATE TABLE #Temp_XerV3DB ( DBName varchar(100) , DataFileMB numeric(19,5) , LogFileFileMB numeric(19,5) ,DBSize numeric(19,5)  ) 
+INSERT INTO  #Temp_XerV3DB
+exec sp_msForEachDb ' if 1 =  ( select case when ''?'' like ''Xerov3_%'' then 1 else 0 end ) 
+select
+	 ''?'' DBNAME ,
+	SUM(CASE WHEN groupid >0 THEN 	convert(numeric(10,2),round(a.size/128.,2)) ELSE 0 END) DataFile ,
+	SUM(CASE WHEN groupid =0 THEN 	convert(numeric(10,2),round(a.size/128.,2)) ELSE 0 END ) LogFile , 
+	
+	SUM(CASE WHEN groupid >0 THEN 	convert(numeric(10,2),round(a.size/128.,2)) ELSE 0 END)   + 
+	SUM(CASE WHEN groupid =0 THEN 	convert(numeric(10,2),round(a.size/128.,2)) ELSE 0 END ) 
+from
+	?..sysfiles a
+	'
+
+
+	sELECT * FROM #Temp_XerV3DB
+77.) Whoi is active 
+declare @myspid int
+select @myspid=spid from sys.sysprocesses where program_name like'%sqlcmd%'
+exec sp_whoisactive @myspid
+
+78.) Find the root blocked SPID query
+Select s2.text , * from sys.sysprocesses  A 
+CROSS APPLY sys.dm_exec_sql_text(a.sql_handle) AS s2 
+where spid in (select blocked from sys.sysprocesses where blocked > 0 ) and blocked <> 0
+
+79.) shard Index - index existency in 
+
+if object_id('tempdb..#Temp_Index') is not null drop table #Temp_Index CREATE TABLE #Temp_Index ( IndexName varchar(100) )
+if object_id('tempdb..#Temp_IndexExists') is not null drop table #Temp_IndexExists CREATE TABLE #Temp_IndexExists ( Servername varchar(100) ,dbnAME VARCHAR(100), IndexName varchar(100) ,Exists1 VARCHAR(3)  )
+
+INSERT INTO  #Temp_Index 
+VALUES ('IX_Invoice_K82_K9_K27_INC_2_3') 
+--VALUES ('IX_Invoice_K53_K9_K27_INC_1_3') 
+
+
+INSERT INTO #Temp_IndexExists
+EXEC sp_msforeachdb ' if ''?'' like  ''xerov3_%''  
+begin
+use [?]
+select @@Servername , ''?'' ,  T.IndexName ,case when I.name is null THEN ''NO'' ELSE ''YES'' END 
+from #Temp_Index T
+left join [?].sys.indexes I ON T.IndexName = I.name collate database_default and 
+	I.ObjecT_ID = object_id(''invoice'')
+end'
+
+
+--Select * from #Temp_IndexExists WHERE eXISTS1 <>  'YES'  and servername <> '647052-O1PHREST' and dbname like 'XEROV3%'
+Select * from #Temp_IndexExists WHERE eXISTS1 = 'YES' and dbname like 'XEROV3%'
+
+79A) shard columns - Check exists 
+
+if object_id('tempdb..#Temp_Index') is not null drop table #Temp_Index CREATE TABLE #Temp_Index ( name varchar(100) )
+if object_id('tempdb..#Temp_IndexExists') is not null drop table #Temp_IndexExists CREATE TABLE #Temp_IndexExists ( Servername varchar(100) ,dbnAME VARCHAR(100), IndexName varchar(100) ,Exists1 VARCHAR(3)  )
+
+INSERT INTO  #Temp_Index 
+VALUES ('SendMeACopy') 
+--VALUES ('IX_Invoice_K53_K9_K27_INC_1_3') 
+
+
+INSERT INTO #Temp_IndexExists
+EXEC sp_msforeachdb ' if ''?'' like  ''xerov3_%''  
+begin
+use [?]
+select @@Servername , ''?'' ,  T.name ,case when I.name is null THEN ''NO'' ELSE ''YES'' END 
+from #Temp_Index T
+left join [?]..syscolumns I ON T.name = I.name collate database_default and 
+	I.ID = object_id(''UserOrganisationDefaultChoices'')
+end'
+
+
+--Select * from #Temp_IndexExists WHERE eXISTS1 <>  'YES'  and servername <> '647052-O1PHREST' and dbname like 'XEROV3%'
+Select * from #Temp_IndexExists WHERE eXISTS1 = 'no' and dbname like 'XEROV3%'
+
+
+
+80.) Find the Persisted property for computed columns
+drop table #Temp_Persisted
+create table #Temp_Persisted ( DBIID int ,  DBName varchar(100) , TBName varchar(100), COLname varchar(100) , Is_Persisted int )
+
+insert into #Temp_Persisted 
+exec sp_msforeachdb ' if exists ( select 1 from ?.sys.computed_columns )  
+select db_id(''?''),  ''?'', t.name, c.name ,is_persisted
+from ?.sys.tables t
+inner join ?.sys.computed_columns c on c.object_id = t.object_id
+'
+
+
+Select * from #Temp_Persisted 
+
+
+81.) tempDB not shrinking 
+
+
+Shinkg the database ; if the temp db file does not appear to be shrunk then check for the following message in the "message" tabe
+
+
+message:  
+DBCC SHRINKFILE: Page 17:2120552 could not be moved because it is a work table page.
+
+Use This query to find if there are trapped transactions in tempdb : 
+select DB_name(Database_id), * from sys.dm_tran_active_transactions s1 inner join sys.dm_tran_database_transactions s2
+on s1.transaction_id = s2.transaction_id
+
+
+Run the following commands
+
+USE [tempdb]
+GO
+DBCC DROPCLEANBUFFERS
+GO
+DBCC FREEPROCCACHE
+GO
+DBCC FREESESSIONCACHE
+GO
+DBCC FREESYSTEMCACHE ( 'ALL')
+
+
+try shrinking tempdb to the know good size as the reset of the replicas
+
+
+
+
+82.) Secondary out of Sync
+
+--drop table #Temp_ReplicaList
+--drop table #Temp_ReplicaList_Primary 
+
+if object_id('tempdb..#Temp_ReplicaList_Primary') is not null drop table #Temp_ReplicaList_Primary
+if object_id('tempdb..#Temp_ReplicaList') is not null drop table #Temp_ReplicaList
+
+
+SELECT 
+	ARCS.replica_server_name 
+	,HARS.Role_Desc 	
+	,RCS.database_name 
+	,RS.last_commit_time
+into  #Temp_ReplicaList_Primary
+FROM sys.dm_hadr_database_replica_states RS
+JOIN  sys.dm_hadr_database_replica_cluster_states RCS ON 
+	RS.replica_id = RCS.replica_id AND
+		RS.group_database_id = RCS.group_database_id
+JOIN Sys.dm_hadr_availability_replica_cluster_states ARCS ON
+		ARCS.replica_id =  RS.replica_id	
+JOIN Sys.dm_hadr_availability_replica_states HARS ON 
+	RS.replica_id = HARS.replica_id
+where HARS.Role_Desc = 'PRIMARY'
+
+
+SELECT 
+	ARCS.replica_server_name 
+	,HARS.Role_Desc 	
+	,RCS.database_name 
+	,RS.last_commit_time
+into #Temp_ReplicaList
+FROM sys.dm_hadr_database_replica_states RS
+JOIN  sys.dm_hadr_database_replica_cluster_states RCS ON 
+	RS.replica_id = RCS.replica_id AND
+		RS.group_database_id = RCS.group_database_id
+JOIN Sys.dm_hadr_availability_replica_cluster_states ARCS ON
+		ARCS.replica_id =  RS.replica_id	
+JOIN Sys.dm_hadr_availability_replica_states HARS ON 
+	RS.replica_id = HARS.replica_id
+where HARS.Role_Desc <> 'PRIMARY'
+
+
+
+SELECT s.replica_server_name Secondary_Server_Name   , S.Role_Desc Secondary_RoleDesc,   S.last_commit_time  Secondary_last_commit_time , S.database_name , 
+		P.Role_Desc Primaey_RoleDesc  ,   P.last_commit_time Primary_last_commit_time, DATEDIFF(MI , P.last_commit_time , S.last_commit_time  ) TimeDiff
+FROM #Temp_ReplicaList S
+JOIN #Temp_ReplicaList_Primary P ON P.database_name = S.database_name
+--WHERE DATEDIFF(MI , P.last_commit_time , S.last_commit_time  ) < -1 
+where S.database_name = 'bankmanager'
+
+
+
+
+
+SElect name, log_reuse_wait_desc from sys.databases where name like 'XeroV3_%'
+
+Declare @DBName NVARCHAR(25) = 'XeroV3_133'
+            SELECT AGS.name                       AS AGGroupName, 
+                   AR.replica_server_name         AS InstanceName, 
+                   HARS.role_desc, 
+                   Db_name(DRS.database_id)       AS DBName, 
+                   AR.availability_mode_desc      AS SyncMode, 
+                   DRS.last_hardened_time, -- On a secondary database, time of the log-block identifier for the last hardened LSN (last_hardened_lsn).
+                   DRS.last_redone_time, -- Time when the last log record was redone on the secondary database.
+				   ABS(DATEDIFF(MINUTE, last_hardened_time, last_redone_time) ) as MinutesBehind,
+                   DRS.log_send_queue_size, 
+                   DRS.redo_queue_size,
+                   DRS.last_commit_time
+            FROM   sys.dm_hadr_database_replica_states DRS 
+            LEFT JOIN sys.availability_replicas AR 
+            ON DRS.replica_id = AR.replica_id 
+            LEFT JOIN sys.availability_groups AGS 
+            ON AR.group_id = AGS.group_id 
+            LEFT JOIN sys.dm_hadr_availability_replica_states HARS ON AR.group_id = HARS.group_id 
+            AND AR.replica_id = HARS.replica_id
+			Where Db_name(DRS.database_id) = @DBName
+		Order by last_commit_lsn desc
+
+
+83.) Identifying constraints 
+SELECT * 
+    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS 
+	where CONSTRAINT_TYPE not in ('FOREIGN KEY','UNIQUE', 'PRIMARY KEY')
+	 --table_name = 'account'
+
+84.) CPU intensive queries 
+
+
+
+---------------------------
+-- query plan stuff
+---------------------------
+SELECT db_name(a.dbid)  , A.SPID , A.lastwaittype , last_Execution_Time , 
+(total_worker_time/execution_count) AS [Avg CPU Time],
+a.physical_io/execution_count Avg_Physical_IO,
+qs.execution_count,
+a.blocked, session_id HeaderBlockerID  ,
+--more stuff
+qs.plan_handle,
+qs.sql_handle,
+a.status,
+
+a.loginame,
+SUBSTRING(st.text, (qs.statement_start_offset/2)+1,
+      ((CASE qs.statement_end_offset
+        WHEN -1 THEN DATALENGTH(st.text)
+       ELSE qs.statement_end_offset
+       END - qs.statement_start_offset)/2) + 1) AS statement_text
+FROM sys.dm_exec_query_stats AS qs
+join sysprocesses A on  A.sql_handle = QS.sql_handle
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
+--/*
+left join 
+		(
+			select head_blocker.session_id ,blocking_session_id
+			from sys.dm_exec_requests head_blocker 
+			where
+			-- head_blocker.session_id = a.session_id  --(select der.blocking_session_id from sys.dm_exec_requests der) 
+			head_blocker.blocking_session_id = 0
+			and head_blocker.database_id <> DB_ID('SSISDB')
+		 ) BK ON BK.blocking_session_id =  A.SPID
+--*/
+--where a.blocked=1
+ORDER BY total_worker_time/execution_count DESC;
+
+
+SELECT db_name(a.dbid)  , A.SPID , A.lastwaittype , last_Execution_Time , 
+(total_worker_time/execution_count) AS [Avg CPU Time],
+    SUBSTRING(st.text, (qs.statement_start_offset/2)+1, 
+        ((CASE qs.statement_end_offset
+          WHEN -1 THEN DATALENGTH(st.text)
+         ELSE qs.statement_end_offset
+         END - qs.statement_start_offset)/2) + 1) AS statement_text
+FROM sys.dm_exec_query_stats AS qs
+join sysprocesses A on  A.sql_handle = QS.sql_handle
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
+ORDER BY total_worker_time/execution_count DESC;
+
+85.) Find the head blocker
+select head_blocker.session_id 
+from sys.dm_exec_requests head_blocker 
+where head_blocker.session_id in (select der.blocking_session_id from sys.dm_exec_requests der) 
+  and head_blocker.blocking_session_id = 0
+  and head_blocker.database_id <> DB_ID('SSISDB')
+
+86.) Quick tempDB Summary 
+-- Quick TempDB Summary
+SELECT (SUM(user_object_reserved_page_count) * 8.192)/1024 AS [UserObjectsMB] ,
+      (SUM(internal_object_reserved_page_count) * 8.192)/1024 AS [InternalObjectsMB] ,
+      (SUM(version_store_reserved_page_count) * 8.192)/1024 AS [VersonStoreMB] ,
+      (SUM(unallocated_extent_page_count) * 8.192)/1024 AS [FreeSpaceMB]
+FROM    sys.dm_db_file_space_usage ;
+
+
+
+SELECT tdt.database_transaction_log_bytes_reserved,tst.session_id,
+       t.[text], [statement] = COALESCE(NULLIF(
+         SUBSTRING(
+           t.[text],
+           r.statement_start_offset / 2,
+           CASE WHEN r.statement_end_offset < r.statement_start_offset
+             THEN 0
+             ELSE( r.statement_end_offset - r.statement_start_offset ) / 2 END
+         ), ''
+       ), t.[text])
+     FROM sys.dm_tran_database_transactions AS tdt
+     INNER JOIN sys.dm_tran_session_transactions AS tst
+     ON tdt.transaction_id = tst.transaction_id
+         LEFT OUTER JOIN sys.dm_exec_requests AS r
+         ON tst.session_id = r.session_id
+         OUTER APPLY sys.dm_exec_sql_text(r.plan_handle) AS t
+     WHERE tdt.database_id = 2;
+
+Queries executin gone tempDB 
+
+
+
+;WITH task_space_usage AS (
+    -- SUM alloc/delloc pages
+    SELECT session_id,
+           request_id,
+           SUM(internal_objects_alloc_page_count) AS alloc_pages,
+           SUM(internal_objects_dealloc_page_count) AS dealloc_pages
+    FROM sys.dm_db_task_space_usage WITH (NOLOCK)
+    WHERE session_id <> @@SPID
+    GROUP BY session_id, request_id
+)
+SELECT TSU.session_id,
+       TSU.alloc_pages * 1.0 / 128 AS [internal object MB space],
+       TSU.dealloc_pages * 1.0 / 128 AS [internal object dealloc MB space],
+       EST.text,
+       -- Extract statement from sql text
+       ISNULL(
+           NULLIF(
+               SUBSTRING(
+                 EST.text, 
+                 ERQ.statement_start_offset / 2, 
+                 CASE WHEN ERQ.statement_end_offset < ERQ.statement_start_offset 
+                  THEN 0 
+                 ELSE( ERQ.statement_end_offset - ERQ.statement_start_offset ) / 2 END
+               ), ''
+           ), EST.text
+       ) AS [statement text],
+       EQP.query_plan
+FROM task_space_usage AS TSU
+INNER JOIN sys.dm_exec_requests ERQ WITH (NOLOCK)
+    ON  TSU.session_id = ERQ.session_id
+    AND TSU.request_id = ERQ.request_id
+OUTER APPLY sys.dm_exec_sql_text(ERQ.sql_handle) AS EST
+OUTER APPLY sys.dm_exec_query_plan(ERQ.plan_handle) AS EQP
+WHERE EST.text IS NOT NULL OR EQP.query_plan IS NOT NULL
+ORDER BY 3 DESC;
+
+85.) Set the isolation level 
+SET TRANSACTION ISOLATION LEVEL SNAPSHOT
+
+
+86.) TempDB usage 
+
+-- Quick TempDB Summary
+SELECT (SUM(user_object_reserved_page_count) * 8.192)/1024 AS [UserObjectsMB] ,
+      (SUM(internal_object_reserved_page_count) * 8.192)/1024 AS [InternalObjectsMB] ,
+      (SUM(version_store_reserved_page_count) * 8.192)/1024 AS [VersonStoreMB] ,
+      (SUM(unallocated_extent_page_count) * 8.192)/1024 AS [FreeSpaceMB]
+FROM    sys.dm_db_file_space_usage ;
+
+
+-- Transactions on TempDB 
+SELECT tdt.database_transaction_log_bytes_reserved,
+		tst.session_id, 
+       t.[text], [statement] = COALESCE(NULLIF(
+         SUBSTRING(
+           t.[text],
+           r.statement_start_offset / 2,
+           CASE WHEN r.statement_end_offset < r.statement_start_offset
+             THEN 0
+             ELSE( r.statement_end_offset - r.statement_start_offset ) / 2 END
+         ), ''
+       ), t.[text])
+     FROM sys.dm_tran_database_transactions AS tdt
+     INNER JOIN sys.dm_tran_session_transactions AS tst
+     ON tdt.transaction_id = tst.transaction_id
+         LEFT OUTER JOIN sys.dm_exec_requests AS r
+         ON tst.session_id = r.session_id
+         OUTER APPLY sys.dm_exec_sql_text(r.plan_handle) AS t
+     WHERE tdt.database_id = 2;
+
+-- Unique statemetns 
+;WITH s AS
+(
+    SELECT 
+        s.session_id,
+        [pages] = SUM(s.user_objects_alloc_page_count 
+          + s.internal_objects_alloc_page_count) 
+    FROM sys.dm_db_session_space_usage AS s
+    GROUP BY s.session_id
+    HAVING SUM(s.user_objects_alloc_page_count 
+      + s.internal_objects_alloc_page_count) > 0
+)
+SELECT s.session_id, s.[pages], t.[text], 
+  [statement] = COALESCE(NULLIF(
+    SUBSTRING(
+        t.[text], 
+        r.statement_start_offset / 2, 
+        CASE WHEN r.statement_end_offset < r.statement_start_offset 
+        THEN 0 
+        ELSE( r.statement_end_offset - r.statement_start_offset ) / 2 END
+      ), ''
+    ), t.[text])
+FROM s
+LEFT OUTER JOIN 
+sys.dm_exec_requests AS r
+ON s.session_id = r.session_id
+OUTER APPLY sys.dm_exec_sql_text(r.plan_handle) AS t
+ORDER BY s.[pages] DESC;
+
+
+
+87.) Paged_MB for a database
+
+;WITH s AS
+(
+    SELECT 
+        s.session_id, 
+        [pages] = SUM(s.user_objects_alloc_page_count 
+          + s.internal_objects_alloc_page_count) 
+    FROM sys.dm_db_session_space_usage AS s
+    GROUP BY s.session_id
+    HAVING SUM(s.user_objects_alloc_page_count 
+      + s.internal_objects_alloc_page_count) > 0
+)
+SELECT s.session_id, DB_NAME (SP.DBID) DBNAME  ,
+		SUM((s.[pages]) * 8.192)/1024 PageUsed_MB
+FROM s
+JOIN sysprocesses SP ON s.session_id = SP.SPID 
+GROUP BY s.session_id, DB_NAME (SP.DBID)
+--ORDER BY s.[pages] DESC;
+
+
+
+88.) Space used 
+use Splunk_TempStage
+select
+	[FileSizeMB]	=		convert(numeric(10,2),round(a.size/128.,2)),
+	[UsedSpaceMB]	=		convert(numeric(10,2),round(fileproperty( a.name,'SpaceUsed')/128.,2)) ,
+	[UnusedSpaceMB]	=		convert(numeric(10,2),round((a.size-fileproperty( a.name,'SpaceUsed'))/128.,2)) ,
+	100 - (convert(numeric(10,2),round(fileproperty( a.name,'SpaceUsed')/128.,2)) / convert(numeric(10,2),round(a.size/128.,2)) * 100) [ToUse%] ,
+	[DBFileName]	= a.name ,
+	substring(FileName , 1,1)  PHDrive
+from
+		sysfiles a
+
+--DBCC sqlperf(logspace)
+--DBCC SHRINKFILE ('AdventureWorks_log', 2)
+
+--ALTER DATABASE [FraudBuster] MODIFY FILE ( NAME = N'FraudBuster', SIZE = 22000MB )
+
+
+
+if object_id('tempdb..#TempfileSize' ) is not null drop table #TempfileSize 
+create table #TempfileSize ( DBname varchar(100) , FileSizeMB numeric(10,2)  , UsedSpaceMB numeric(10,2) ,  UnUsedSpaceMB numeric(10,2) ,[toUse%] numeric(10,2)  , DBFileName varchar(100), PHDrive  varchar(10) )
+
+--select * from #TempfileSize 
+go
+--insert into #TempfileSize 
+sp_msforeachdb ' use  ? insert into #TempfileSize 
+	select DB_name ( ) DBname ,
+	[FileSizeMB]	=		convert(numeric(10,2),round(a.size/128.,2)),
+	[UsedSpaceMB]	=		convert(numeric(10,2),round(fileproperty( a.name,''SpaceUsed'')/128.,2)) ,
+	[UnusedSpaceMB]	=		convert(numeric(10,2),round((a.size-fileproperty( a.name,''SpaceUsed''))/128.,2)) ,
+	100 - (convert(numeric(10,2),round(fileproperty( a.name,''SpaceUsed'')/128.,2)) / convert(numeric(10,2),round(a.size/128.,2)) * 100) [ToUse%] ,
+	[DBFileName]	= a.name ,
+	substring(FileName , 1,1)  PHDrive
+from
+		?..sysfiles a' 
+select * from #TempfileSize 
+		
+		 
+
+
+88.) AG Routing Settings
+
+SELECT ag.name as "Availability Group", ar.replica_server_name as "When Primary Replica Is",
+
+        rl.routing_priority as "Routing Priority", ar2.replica_server_name as "RO Routed To",
+
+        ar.secondary_role_allow_connections_desc, ar2.read_only_routing_url
+
+FROM sys.availability_read_only_routing_lists rl
+
+        inner join sys.availability_replicas ar on rl.replica_id = ar.replica_id
+
+        inner join sys.availability_replicas ar2 on rl.read_only_replica_id = ar2.replica_id
+
+        inner join sys.availability_groups ag on ar.group_id = ag.group_id
+
+ORDER BY ag.name, ar.replica_server_name, rl.routing_priority
+
+89.) Subscriptions outof date
+
+if object_id('tempdb..#Temp_Subscription') is not null  drop table #Temp_Subscription
+create table #Temp_Subscription ( DBName varchar(100) ,PublicationName varchar(100) , SubscriptionCount int, Oldest_SubscriptionDateUTC datetime) 
+
+insert into #Temp_Subscription
+EXEC sp_msforeachdb ' if  ''?'' like  ''xerov3%'' 
+
+begin  
+
+use [?];
+
+select ''?'' , A.PublicationName, Count(A.SubscriptionDateUTC) ,B.Oldest_SubscriptionDateUTC  
+from ?.[XeroDBreplication].[Subscription] A
+join 
+(
+Select PublicationName ,min(SubscriptionDateUTC ) Oldest_SubscriptionDateUTC 
+from ?.[XeroDBreplication].[Subscription] IB 
+where IB.SubscriptionDateUTC <  dateadd(hour,-24,GETUTCDATE()) group by PublicationName
+) B ON 
+   A.PublicationName  = B.PublicationName 
+   
+where A.SubscriptionDateUTC <  dateadd(hour,-24,GETUTCDATE()) 
+group by A.PublicationName , B.Oldest_SubscriptionDateUTC  
+
+end
+'
+
+Select * from #Temp_Subscription 
+
+
+
+
+90.) DB File size
+
+
+declare @res table 
+(
+servername varchar(100), dbname varchar(100), segmentname varchar(100), groupID smallint, filename varchar(200),sizeMB decimal(19,2), spaceUsedMB decimal(19,2),
+availableSpaceMB decimal(19,2),percentUsed decimal(5,2), percentFree decimal(5,2)
+)
+
+
+insert @res
+
+EXEC sp_MSforeachdb
+'
+USE [?];
+
+
+SELECT @@servername, db_name(), RTRIM(name) AS [Segment Name], groupid AS [Group Id], filename AS [File Name],
+  CAST(size/128.0 AS DECIMAL(10,2)) AS [Size in MB],
+  CAST(FILEPROPERTY(name, "SpaceUsed")/128.0 AS DECIMAL(10,2)) AS [Space Used],
+  CAST(size/128.0-(FILEPROPERTY(name, "SpaceUsed")/128.0) AS DECIMAL(10,2)) AS [Available Space],
+  CAST((CAST(FILEPROPERTY(name, "SpaceUsed")/128.0 AS DECIMAL(10,2))/CAST(size/128.0 AS DECIMAL(10,2)))*100 AS DECIMAL(10,2)) AS [Percent Used],
+  100 - CAST((CAST(FILEPROPERTY(name, "SpaceUsed")/128.0 AS DECIMAL(10,2))/CAST(size/128.0 AS DECIMAL(10,2)))*100 AS DECIMAL(10,2)) AS [Percent Free]
+FROM sysfiles
+ORDER BY groupid DESC
+'
+--segmentname is logicalfilename
+select getdate() dateRun, r.servername, r.dbname, r.segmentname, r.sizeMB, r.percentFree, 'dbcc shrinkfile (' + r.segmentname + ',100);'
+from @res r 
+--where percentfree<10
+order by 2,3
+
+--select * from @res
+
+91.) Pivot data from a shard query
+
+if object_id('tempdb..#Temp_AssetCount') is not null  drop table #Temp_AssetCount
+create table #Temp_AssetCount ( DBName varchar(100) ,TypeName  varchar(100) , RowCnt int) 
+
+insert into #Temp_AssetCount
+EXEC sp_msforeachdb ' if 1 = ( select case when ''?'' like  ''xerov3_%'' then 1 else 0 end )
+use [?]; 
+
+SELECT ''?'' , ''Asset_Cnt Asset'', COUNT(1) AS [Total # of assets] FROM ?.dbo.Asset UNION ALL
+SELECT ''?'' , ''Total_Asset_Org_Cnt'' ,  COUNT(DISTINCT OrganisationID) AS [Total # of orgs with assets] FROM ?.dbo.Asset
+
+'
+--Select * from #Temp_AssetCount
+--drop table #Temp_AssetCount2
+select * into #Temp_AssetCount2 
+from 
+(
+ select S.* from #Temp_AssetCount S
+ join sys.databases sb on s.DBnam(sum(re = SB.NAME 
+ WHERE Sb.Source_Database_ID is null   
+) as S
+pivot (sum(RowCnt) 
+for TypeName in( [Asset_Cnt Asset],[Total_Asset_Org_Cnt])) as  B 
+Order by DBName 
+
+
+Select * from #Temp_AssetCount2 Order by DBname 
+
+92.) dirty snapshot spot check
+Select @@servername
+
+--how old is a snapshot?
+
+select @@servername server_name, name, create_date, state_desc,  'drop database ' + QUOTENAME(name) + ';' [drop_cmd]
+from sys.databases
+where source_database_id is not null
+order by 2 desc
+
+93.) Compare dacpac
+"\Program Files (x86)\Microsoft SQL Server\110\DAC\bin\SqlPackage.exe" /a:Script /sf:BankFeeds_v1.dacpac /tf:BankFeeds_v3.dacpac /tdn:bankfeeds.db /op:v3_to_v1.sql
+
+"\Program Files (x86)\Microsoft SQL Server\110\DAC\bin\SqlPackage.exe" /a:DeployReport /sf:BankFeeds_v1.dacpac /tf:BankFeeds_v3.dacpac /tdn:bankfeeds.db /op:AdventureWorks2012_v1.xml
+
+
+
+Xeport data to a Dacpac 
+sqlpackage /a:Extract /tf:_LS3.smartscore.dacpac /p:ExtractAllTableData=false /p:TableData="dbo.FeedLogMessage" /SourceConnectionString:"Integrated Security=SSPI;Persist Security Info=False;Initial Catalog=SmartsCore;Data Source=sql.livestage3.test.xero.com"
+
+
+94.) Generate dacpac for a database 
+"%ProgramFiles(x86)%\Microsoft SQL Server\110\DAC\bin\sqlpackage.exe" /Action:Extract /SourceServerName:643096-D1VMSQ25 /SourceDatabaseName:BankFeeds /TargetFile:BankFeeds_v3.dacpac /p:IgnoreExtendedProperties=True /p:IgnorePermissions=False /p:ExtractApplicationScopedObjectsOnly=True
+
+
+95.) Fluch procedure cach for a DB 
+dbcc FlushprocinDB(db_id())
+
+96.) Search for Login in AD groups 
+create table #Temp_Account ( AccountName varchar(100) , Type1 varchar(10) , Privilage 
+Select 'Xp_logininfo ''' + Name + '''' + ',' + '''members'''  from syslogins where isntgroup  =1 
+
+
+96.) CDC change 
+
+https://docs.google.com/a/xero.com/document/d/1u300xrD8RpVSwlEFTH-vH8HHRMHTmZMDe6oemhzafic/edit
+
+97.) last time DBCC checkdb was executed
+Use Master 
+CREATE TABLE #DBCheckInfo (
+[LogDate] VARCHAR(25),
+[ProcessInfo] VARCHAR(10),
+[Text] VARCHAR(1000)
+)
+
+INSERT INTO #sCheckInfo EXECUTE sp_ReadErrorLog 0, 1, 'dbcc checkdb'
+SELECT * FROM #DBCheckInfo ORDER BY LogDate DESC
+DROP TABLE #DBCheckInfo
+
+97.) Date procedure was last modified 
+
+select name, create_date, modify_date
+from sys.procedures 
+Order by modify_date desc 
+
+
+if object_id('tempdb..#Temp_Index') is not null drop table #Temp_Index CREATE TABLE #Temp_Index ( Procname varchar(100) )
+if object_id('tempdb..#Temp_IndexExists') is not null drop table #Temp_IndexExists CREATE TABLE #Temp_IndexExists ( dbnAME VARCHAR(100), Procname varchar(100) ,Modifieddate Datetime )
+
+INSERT INTO  #Temp_Index 
+VALUES 
+('PriceListItems_ItemSummaryReport')
+
+
+
+INSERT INTO #Temp_IndexExists
+EXEC sp_msforeachdb ' if ''?'' like  ''xerov3_%''
+begin 
+
+select ''?'' ,  T.Procname , modify_date
+from #Temp_Index T
+left join [?].sys.procedures I ON T.Procname = I.name  collate database_default 
+--left join [?].sys.objects I ON T.Procname = I.name  collate database_default --function
+	
+end'
+
+
+Select * from #Temp_IndexExists 
+
+
+98.) Default constraints 
+SELECT
+   tables.name TableName ,  all_columns.name Columnname , default_constraints.name DefaultConstraintname 
+FROM 
+    sys.all_columns
+ INNER JOIN    sys.tables
+        ON all_columns.object_id = tables.object_id
+
+ INNER JOIN sys.schemas
+        ON tables.schema_id = schemas.schema_id
+ INNER JOIN sys.default_constraints
+        ON all_columns.default_object_id = default_constraints.object_id
+
+WHERE 
+        schemas.name = 'Inventory'
+    AND tables.name = 'AdjustmentMovementLine'
+    --AND all_columns.name = 'columnname'
+Order by TableName 
+
+
+98.) Access readonly Intent Server
+ApplicationIntent=readonly;database=Ticketing
+
+
+
+99.) Script Role permission 
+
+DECLARE @RoleName VARCHAR(75) = 'Sniper_Read_Only'
+
+DECLARE @RoleTable TABLE ([GrantedBy] VARCHAR (50) NOT NULL, [Permission] VARCHAR (50) NOT NULL, [State] VARCHAR (50) NOT NULL)
+DECLARE @RoleScript VARCHAR(75)
+
+INSERT INTO @RoleTable SELECT p2.[name], dbp.[permission_name], dbp.[state_desc] 
+FROM [sys].[database_permissions] dbp LEFT JOIN [sys].[objects] so
+    ON dbp.[major_id] = so.[object_id] LEFT JOIN [sys].[database_principals] p
+    ON dbp.[grantee_principal_id] = p.[principal_id] LEFT JOIN [sys].[database_principals] p2
+    ON dbp.[grantor_principal_id] = p2.[principal_id]
+WHERE p.[name] = @RoleName
+
+--SELECT 'USE [' +  DB_NAME() + '] CREATE ROLE [' + @RoleName + ']' AS 'Create Role'
+SELECT 'USE [' +  DB_NAME() + '] GRANT ' + [Permission] + ' ON SCHEMA::[' + [GrantedBy] + '] TO [' + @RoleName + ']' AS 'Add Permissions' 
+FROM @RoleTable 
+
+100.) Sp_WhoisActive
+--filter program_name
+
+EXEC sp_WhoIsActive 
+    @find_block_leaders = 1, 
+    @sort_order = '[blocked_session_count] DESC',
+	--@filter_type='database', @filter='%xero%',
+	@filter_type='program', @filter='%xeroweb%'
+
+101.) Sp Who is active
+EXEC sp_WhoIsActive 
+   @find_block_leaders = 1, 
+   @sort_order = '[blocked_session_count] DESC',
+@filter_type='database', @filter='xeroreporting%'
+
+102.) The last time the log transmitted
+
+DECLARE @LSN NVARCHAR(25)
+CREATE TABLE #temp
+(
+       RowName SYSNAME,
+       Value VARCHAR(50),
+)
+ 
+INSERT INTO #temp (RowName,Value)
+EXECUTE ('DBCC OPENTRAN WITH TABLERESULTS')
+ 
+SELECT @LSN = Value
+FROM #temp
+WHERE RowName = 'REPL_NONDIST_OLD_LSN'
+ 
+SELECT [Begin Time] 
+FROM ::fn_dblog(REPLACE(REPLACE(@LSN,'(',''),')',''),REPLACE(REPLACE(@LSN,'(',''),')',''))
+ 
+DROP TABLE #temp
+
+
+
+103.) Missing backups 
+
+Select name  from sys.databases 
+except 
+select Database_name 
+from (
+SELECT  
+   CONVERT(CHAR(100), SERVERPROPERTY('Servername')) AS Server, 
+   msdb.dbo.backupset.database_name,  
+   msdb.dbo.backupset.backup_start_date,  
+   msdb.dbo.backupset.backup_finish_date, 
+   msdb.dbo.backupset.expiration_date, 
+   CASE msdb..backupset.type  
+       WHEN 'D' THEN 'Database'  
+       WHEN 'L' THEN 'Log'  
+   END AS backup_type,  
+   msdb.dbo.backupset.backup_size,  
+   msdb.dbo.backupmediafamily.logical_device_name,  
+   msdb.dbo.backupmediafamily.physical_device_name,   
+   msdb.dbo.backupset.name AS backupset_name, 
+   msdb.dbo.backupset.description 
+FROM   msdb.dbo.backupmediafamily  
+
+
+
+   INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id  
+WHERE  (CONVERT(datetime, msdb.dbo.backupset.backup_start_date, 102) >= GETDATE() - 2)  
+and Type= 'd'
+and backup_start_date > '2015-06-21'
+--ORDER BY  
+--   msdb.dbo.backupset.database_name, 
+   --msdb.dbo.backupset.backup_finish_date 
+)  A 
+
+
+Backup statement
+ Select * ,
+' BACKUP DATABASE ' + DatabaseName +   + 
+' TO  DISK = N'''+  BackupPath + '\'+ DatabaseName + '_2015_06_21_160600_1.bak'''  + 
+' WITH NOFORMAT, NOINIT,  NAME = N''' + DatabaseName + '-Full Database Backup'',' + 
+' SKIP, NOREWIND, NOUNLOAD, COMPRESSION,  STATS = 10 ' 
+
+   from dba.[maintenance].[BackupConfigurationPlan] where Databasename in (
+'XeroV3_38'
+,'XeroV3_35'
+,'XeroV3_36'
+,'OMT')
+and BackupType= 'FULL'
+
+
+104.) Shard version (DB)
+
+-----------------------------
+-- combined - BEST
+-----------------------------
+
+
+if object_id('tempdb.dbo.#results') is not null
+begin
+	drop table #results
+end
+
+create table  #results  (servername varchar(100), dbname varchar(100),fullversiondetails varchar(100), deploymentdateutc datetime, deployedby varchar(100))
+
+insert #results
+exec sp_msforeachdb
+' if ''?'' like ''Xerov3%''
+Begin 
+
+use [?]
+
+if exists (select 1 from sys.schemas where name =''deployment'')
+begin
+
+	select top 1 @@servername servername, db_name() dbname, fullversiondetails, deploymentdateutc,deployedby from Deployment.version order by DeploymentDateUTC desc;
+end
+else
+begin
+	select @@servername, db_name(), ''schema not present'',null,null
+end
+end
+'
+
+
+select * from #results where dbname like 'xerov%' and Servername <> '647052-O1PHREST' order by dbname asc
+
+
+
+104.) Query for SPID 
+
+
+SELECT SDEC.[most_recent_sql_handle], DEST.[text]  
+FROM sys.[dm_exec_connections] SDEC 
+ CROSS APPLY sys.[dm_exec_sql_text](SDEC.[most_recent_sql_handle]) AS DEST 
+WHERE SDEC.[most_recent_session_id] = 57 
+
+
+WITH cte AS(
+SELECT
+	r.session_id,
+	db_name(r.database_id) as DBName,
+	r.status,
+	--r.program_name,
+	s.host_name,
+	s.login_name,
+	r.start_time,
+	(select dest.text as CompleteSQL for xml path(''), type) as CompleteSQL,       
+	(select SUBSTRING(dest.text, r.statement_start_offset / 2,
+			(case when r.statement_end_offset = -1
+				then datalength(dest.text)
+				else r.statement_end_offset
+				end - r.statement_start_offset)/2) as ActiveSQL for xml path(''), type) as ActiveSQL,
+	r.blocking_session_id , 
+	(select destb.text as CompleteSQL_Blocking for xml path(''), type) as CompleteSQL_Blocking,
+	(select SUBSTRING(destb.text, derb.statement_start_offset / 2,
+			(case when derb.statement_end_offset = -1
+				then datalength(destb.text)
+				else derb.statement_end_offset
+				end - derb.statement_start_offset)/2) as ActiveSQL_Blocking for xml path(''),type) as ActiveSQL_Blocking,
+	SUM(r.reads) AS totalReads,
+	SUM(r.writes) AS totalWrites,
+	SUM(r.cpu_time) AS totalCPU,
+	SUM(isnull(tsu.user_objects_alloc_page_count,0) + isnull(tsu.internal_objects_alloc_page_count,0)) AS writes_in_tempdb,
+	r.statement_start_offset,
+	r.statement_end_offset,
+	r.plan_handle
+FROM 
+	sys.dm_exec_requests r
+	INNER JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id
+	LEFT JOIN sys.dm_db_task_space_usage tsu ON s.session_id = tsu.session_id and r.request_id = tsu.request_id
+	CROSS APPLY sys.dm_exec_sql_text (r.sql_handle) dest
+	LEFT JOIN sys.dm_exec_requests derb on r.blocking_session_id = derb.session_id
+	OUTER APPLY sys.dm_exec_sql_text (derb.sql_handle) destb 
+WHERE
+	--r.status IN ('running', 'runnable', 'suspended')
+	--and 
+	dest.text not like '%SqlQueryNotificationService%'
+	
+GROUP BY
+	r.session_id,
+	r.plan_handle,
+	r.status,
+	db_name(r.database_id),
+	s.host_name,
+	s.login_name,
+	r.start_time,
+	dest.text ,
+	r.blocking_session_id , 
+	SUBSTRING(dest.text, r.statement_start_offset / 2,
+				(case when r.statement_end_offset = -1
+					then datalength(dest.text)
+					else r.statement_end_offset
+					end - r.statement_start_offset)/2),
+	SUBSTRING(destb.text, derb.statement_start_offset / 2,
+				(case when derb.statement_end_offset = -1
+					then datalength(destb.text)
+					else derb.statement_end_offset
+					end - derb.statement_start_offset)/2)
+	, r.statement_start_offset
+	, r.statement_end_offset
+	,destb.text)
+	
+SELECT 
+	A.*
+	, convert(xml,deqp.query_plan) CompleteSQL_QueryPlan
+	, convert(xml,detqp.query_plan) ActiveSQL_QueryPlan
+FROM 
+	cte a 
+	CROSS APPLY sys.dm_exec_text_query_plan (a.plan_handle,ISNULL(a.statement_start_offset,0), ISNULL(a.statement_end_offset,-1)) detqp
+	CROSS APPLY sys.dm_exec_query_plan(a.plan_handle) deqp
+WHERE 1=1
+	--CODE BELOW TO CHECK FOR BLOCKERS
+	--AND (EXISTS (SELECT 1 FROM cte b WHERE a.session_id = b.blocking_session_id)
+	--)AND a.blocking_session_id = 0
+
+
+
+
+105.) Locking with Parent transactions
+
+
+;with PC (Spid , Blocked , lastwaittype , waittime,  waitresource , CPU, UID, Login_Time , last_batch)
+as 
+(
+Select C.Spid , C.Blocked , C.lastwaittype , C.waittime,  C.waitresource , C.CPU, C.UID, C.Login_Time , C.last_batch  
+from sysprocesses  C
+where dbid = db_id('Xerov3_1') and 
+PROGRAM_NAME like '%api%' and c.blocked > 0 
+UNION ALL 
+Select P.Spid , P.Blocked , P.lastwaittype , P.waittime,  P.waitresource , P.CPU, P.UID, P.Login_Time , P.last_batch   
+from sysprocesses  P
+JOIN PC PC1 oN PC1.Blocked = P.SPID  
+where P.dbid = db_id('Xerov3_1') 
+) 
+Select PC.* , SDEC.[most_recent_sql_handle], DEST.[text] 
+from PC
+JOIN sys.[dm_exec_connections] SDEC ON SDEC.[most_recent_session_id] = PC.SPID 
+CROSS APPLY sys.[dm_exec_sql_text](SDEC.[most_recent_sql_handle]) AS DEST 
+WHERE SDEC.[most_recent_session_id] = PC.SPID 
+
+
+106.) Check for FK across shards
+
+if object_id('tempdb..#Temp_Index') is not null drop table #Temp_Index CREATE TABLE #Temp_Index ( IndexName varchar(100) )
+if object_id('tempdb..#Temp_IndexExists') is not null drop table #Temp_IndexExists CREATE TABLE #Temp_IndexExists ( dbnAME VARCHAR(100), IndexName varchar(100) ,Exists1 VARCHAR(3)  )
+
+INSERT INTO  #Temp_Index 
+VALUES 
+--('FK_LinkedTransaction_SourceLineItem') 
+--, 
+('BankAccount_GetBankTransactions_T')
+
+
+
+INSERT INTO #Temp_IndexExists
+EXEC sp_msforeachdb ' if 1 = ( select case when ''?'' like  ''xerov3_%'' then 1 else 0 end ) 
+use [?]
+begin 
+
+select ''?'' ,  T.IndexName ,case when I.name is null THEN ''NO'' ELSE ''YES'' END 
+from #Temp_Index T
+left join [?]..sysobjects I ON T.IndexName = I.name collate database_default and 
+	I.ID = object_id(''Job.LinkedTransaction'') and I.Xtype = ''u'' 
+end'
+
+
+Select * from #Temp_IndexExists WHERE eXISTS1 <>  'no' and dbname like 'XEROV3%'
+
+
+
+
+SELECT name, delete_referential_action_desc , is_disabled , is_not_trusted
+FROM sys.foreign_keys where name = 'FK_Freshbooks_ApiLog_Organisation' 
+
+
+107.) Procedure usage statistcs 
+
+if object_id('tempdb..#TEMP_SERVER') is not null drop table #TEMP_SERVER
+CREATE TABLE #TEMP_SERVER( SVRNAME VARCHAR(100) , DBName Varchar(100)  ,maxCPU int , AVGCPU int , MAXDuration int , AVGDuration int ,CNT INT) 
+
+INSERT INTO #TEMP_SERVER ( SVRNAME,DBName ,maxCPU ,AVGCPU,MAXDuration , AVGDuration ,  cnt)  
+EXEC sp_msforeachdb ' if ''?'' like  ''DBA''
+Begin 
+use [?]
+Select  @@SERVERNAME ,  DatabaseName ,  Max(CPUTime) MAX_CPU, Avg(CPUTime) AVG_CPUTime ,MAX(Duration) MAX_Duration, AVG(Duration) AVG_Duration ,  Count(1) NoOf#  
+FROM [?].snapshot.LongRunningQueries 
+WHERE   dateadd (hour,13,EventTimeStampUTC)    > '' dateadd (hour,13,EventTimeStampUTC)    > dateadd(HH, -10,GETDATE()) 
+and IndividualStatement like ''%BankAccount_GetBankTransactions%''
+Group by Databasename 
+end 
+'
+
+108.) Find Locked Objects 
+
+------------------------------------ New ---------------
+SELECT
+OBJECT_NAME(p.OBJECT_ID) AS TableName,
+l.request_mode , l.request_type ,l.resource_type, l.resource_description , 
+case L.request_session_id  
+	when -2 then 'orphaned distributed transaction'
+	when -3 then 'deferred recovery transaction'
+	else 'OwnerSession'
+END request_session_id_Type , request_session_id ,
+ SI.Name IndexName ,
+ ER.start_time, ER.status, ER.command, ER.last_wait_type, ER.blocking_session_id, ER.percent_complete,
+ER.estimated_completion_time/60 [est_completion_SEC],
+ER.estimated_completion_time/60/60 [est_completion_MINS]
+,sqltext.TEXT
+FROM
+sys.dm_tran_locks l
+JOIN sys.partitions p ON l.resource_associated_entity_id = p.hobt_id
+join sysobjects SO ON P.object_id = SO.ID
+join sys.schemas s on SO.Uid = s.schema_id 
+left join Sysindexes SI on p.object_id = SI.ID and SI.Indid = P.index_ID
+left join SYS.dm_exec_requests ER ON ER.SESSION_ID = l.REQUEST_SESSION_ID
+CROSS APPLY sys.dm_exec_sql_text(ER.sql_handle) AS sqltext
+--where OBJECT_NAME(p.OBJECT_ID) = 'Journal'
+where  S.name +'.'+ so.name = 'claims.USER'
+
+------------------------------------ OLD ---------------
+SELECT
+OBJECT_NAME(p.OBJECT_ID) AS TableName,
+resource_type, resource_description
+FROM
+sys.dm_tran_locks l
+JOIN sys.partitions p ON l.resource_associated_entity_id = p.hobt_id
+
+109.) Find the Locks for a table
+
+
+SELECT
+OBJECT_NAME(p.OBJECT_ID) AS TableName,
+l.request_mode , l.request_type ,l.resource_type, l.resource_description , 
+case L.request_session_id  
+	when -2 then 'orphaned distributed transaction'
+	when -3 then 'deferred recovery transaction'
+	else 'OwnerSession'
+END request_session_id_Type , request_session_id ,
+ SI.Name IndexName ,
+ ER.start_time, ER.status, ER.command, ER.last_wait_type, ER.blocking_session_id, ER.percent_complete,
+ER.estimated_completion_time/60 [est_completion_SEC],
+ER.estimated_completion_time/60/60 [est_completion_MINS]
+,sqltext.TEXT
+FROM
+sys.dm_tran_locks l
+JOIN sys.partitions p ON l.resource_associated_entity_id = p.hobt_id
+left join Sysindexes SI on p.object_id = SI.ID and SI.Indid = P.index_ID
+left join SYS.dm_exec_requests ER ON ER.SESSION_ID = l.REQUEST_SESSION_ID
+CROSS APPLY sys.dm_exec_sql_text(ER.sql_handle) AS sqltext
+where OBJECT_NAME(p.OBJECT_ID) = 'Journal'
+
+
+110.) Data Averages 
+
+if object_id('tempdb..#Temp_AVGD') is not null drop table #Temp_AVGD
+
+;with Avgde as 
+(
+Select OrganisationId , Count(1)  CNT
+from PriceListItem 
+where PriceListItemStatusCode = 'PRICELISTSTATUS/ACTIVE' 
+Group by OrganisationId  
+) 
+
+select * into #Temp_AVGD from AVgDe
+
+declare @AVGCnt int , @AVGCnt_H int  
+select @AVGCnt = avg(cnt ) from #Temp_AVGD
+
+select @AVGCnt_H = avg(cnt )
+from #Temp_AVGD
+where cnt > @AVGCnt 
+			
+
+select 'LOW - ' Average , @AVGCnt AVGCnt 
+		,sum(case when Cnt <  @AVGCnt then  cnt end) ls_AVG 		
+		,sum(case when Cnt >=  @AVGCnt then  cnt end) gt_AVG  
+		,sum(cnt) Total 
+from #Temp_AVGD
+Union All 
+select 'High - > Low AVG 
+' + cast( @AVGCnt as varchar(10)) , @AVGCnt_H AVGCnt 
+		,sum(case when Cnt <  @AVGCnt_H then  cnt end) high_ls_AVG 		
+		,sum(case when Cnt >=  @AVGCnt_H then  cnt end) high_gt_AVG  
+		,sum(cnt)
+from #Temp_AVGD
+where cnt > @AVGCnt
+
+111.) Load the SQl Counters
+
+unlodctr MSSQLSERVER
+lodctr "C:\Program Files\Microsoft SQL Server\MSSQL11.MSSQLSERVER\MSSQL\Binn\perf-MSSQLSERVERsqlctr.ini"
+
+112.) Data and Proc cache analysis 
+
+-- Data 
+SELECT
+ CASE database_id
+            WHEN 32767 THEN 'RESOURCEDB'
+            ELSE db_name(database_id)
+            END AS 'DatabaseName'
+            ,page_type
+,Count(1)*8/1024 AS 'Data_CacheSize_MB'
+FROM sys.dm_os_buffer_descriptors
+GROUP BY db_name(database_id) ,database_id , page_type
+ORDER BY DatabaseName
+
+
+-- Proc 
+
+SELECT objtype AS [CacheType]
+        , count_big(*)AS [Total Plans]
+        , sum(cast(size_in_bytes as decimal(18,2)))/1024/1024 AS [Total MBs]
+        , avg(usecounts) AS [Avg Use Count]
+        , sum(cast((CASE WHEN usecounts = 1 THEN size_in_bytes ELSE 0 END) as decimal(18,2)))/1024/1024 AS [Total MBs - USE Count 1]
+        , sum(CASE WHEN usecounts = 1 THEN 1 ELSE 0 END) AS [Total Plans - USE Count 1]
+FROM sys.dm_exec_cached_plans
+GROUP BY objtype
+ORDER BY [Total MBs - USE Count 1] DESC
+
+112A) Buffer Pool Usage - table 
+
+Select  S.name ,
+	 ST.Name TB_Name ,   
+	 Count(1)*8/1024 AS 'Data_CacheSize_MB'
+
+From sys.dm_os_buffer_descriptors BD 
+join sys.allocation_units AU ON BD.Allocation_Unit_ID = AU.Allocation_Unit_ID 
+join sys.partitions P On P.Partition_ID = AU.container_id
+join sys.tables ST on P.Object_ID= ST.Object_iD
+join sys.Schemas S on S.Schema_id = ST.Schema_id
+
+where database_id = db_id('BankFeeds')
+Group by ST.Name  ,S.name
+Order by Count(1)*8/1024 desc 
+ 
+
+112B) Physical Memory
+
+-- To get the total physical memory installed on SQL Server
+SELECT [total_physical_memory_kb] / 1024 AS [Total_Physical_Memory_In_MB]
+    ,[available_page_file_kb] / 1024 AS [Available_Physical_Memory_In_MB]
+    ,[total_page_file_kb] / 1024 AS [Total_Page_File_In_MB]
+    ,[available_page_file_kb] / 1024 AS [Available_Page_File_MB]
+    ,[kernel_paged_pool_kb] / 1024 AS [Kernel_Paged_Pool_MB]
+    ,[kernel_nonpaged_pool_kb] / 1024 AS [Kernel_Nonpaged_Pool_MB]
+    ,[system_memory_state_desc] AS [System_Memory_State_Desc]
+FROM [master].[sys].[dm_os_sys_memory]
+ 
+--To get the minimum and maximum size of memory configured for SQL Server.
+SELECT [name] AS [Name]
+    ,[configuration_id] AS [Number]
+    ,[minimum] AS [Minimum]
+    ,[maximum] AS [Maximum]
+    ,[is_dynamic] AS [Dynamic]
+    ,[is_advanced] AS [Advanced]
+    ,[value] AS [ConfigValue]
+    ,[value_in_use] AS [RunValue]
+    ,[description] AS [Description]
+FROM [master].[sys].[configurations]
+WHERE NAME IN ('Min server memory (MB)', 'Max server memory (MB)')
+
+
+113.) Hot to remove the last commit 
+ - got 1 level above the project folder
+ - Git bash 
+ - get the log by typeing "git log"
+ - remove the last commit by typing "git reset --hard HEAD~1"
+ - check the last commit by typing "git log"
+
+114.) Shards - Index Usage 
+
+if object_id('tempdb..#TEMP_IndeUsage') is not null drop table #TEMP_IndeUsage
+CREATE TABLE #TEMP_IndeUsage (  
+	SVRNAME varchar(100), DBName  varchar(100) , 
+	indexNmae varchar(100) , -- descrption varchar(100) ,     KeyColumns varchar(200) , IncludeColumns varchar(200),Filter Varchar(200), Fillfactor1 int ,
+	UserSeek int , userScan Int ,userLookups int , UserUpdates int , LastuserSeek datetime ,   lastuserScan datetime  
+	--, lastuserLookUp datetime ,  LastuserUpdate datetime  
+	) 
+
+
+
+INSERT INTO #TEMP_IndeUsage 
+EXEC sp_msforeachdb ' if ''?'' like  ''Xerov3%'' 
+begin 
+use [?]
+
+SELECT 
+	@@SERVERNAME , 
+	DB_NAME(dATABASE_ID)  DBNAME,  
+         I.[NAME] AS [INDEX NAME], 
+         USER_SEEKS, 
+         USER_SCANS, 
+         USER_LOOKUPS, 
+         USER_UPDATES , Last_user_Seek , Last_User_Update  
+FROM     SYS.DM_DB_INDEX_USAGE_STATS AS S 
+         INNER JOIN SYS.INDEXES AS I 
+           ON I.[OBJECT_ID] = S.[OBJECT_ID] 
+              AND I.INDEX_ID = S.INDEX_ID 
+WHERE    OBJECTPROPERTY(S.[OBJECT_ID],''IsUserTable'') = 1 
+		AND  DB_NAME(dATABASE_ID) LIKE ''xerov3_%''  
+	    AND OBJECT_NAME(S.[OBJECT_ID])   =''jOURNALlINE''  
+		AND I.[NAME] = ''IX_JournalLine_K2_K5_K6_K3''
+
+end '
+
+Select distinct * from #TEMP_IndeUsage 
+
+
+115.) bULK INSERT 
+BULK INSERT bANKfEEDS.dbo.TEMP_Bankduplicate_transaction
+   FROM 'C:\Duplicate Bank transaction IDs.CSV'
+    WITH (FIRSTROW = 1,fieldterminator=',');
+
+116.) ForeignKey links
+
+Select *
+ from 
+( 
+
+SELECT
+    o1s.name + '.'+o1.name AS FK_table,
+    c1.name AS FK_column,
+    fk.name AS FK_name,
+    o2s.name + '.'+o2.name AS PK_table,
+    c2.name AS PK_column,
+    pk.name AS PK_name,
+    fk.delete_referential_action_desc AS Delete_Action,
+    fk.update_referential_action_desc AS Update_Action
+FROM sys.objects o1
+    INNER JOIN sys.foreign_keys fk
+        ON o1.object_id = fk.parent_object_id
+    INNER JOIN sys.foreign_key_columns fkc
+        ON fk.object_id = fkc.constraint_object_id
+    INNER JOIN sys.columns c1
+        ON fkc.parent_object_id = c1.object_id
+        AND fkc.parent_column_id = c1.column_id
+    INNER JOIN sys.columns c2
+        ON fkc.referenced_object_id = c2.object_id
+        AND fkc.referenced_column_id = c2.column_id
+    INNER JOIN sys.objects o2
+        ON fk.referenced_object_id = o2.object_id
+    INNER JOIN sys.key_constraints pk
+        ON fk.referenced_object_id = pk.parent_object_id
+        AND fk.key_index_id = pk.unique_index_id
+	INNER JOIN sys.schemas o1s on o1.schema_id = o1s.schema_id
+	INNER JOIN sys.schemas o2s on o2.schema_id = o2s.schema_id
+ORDER BY o1.name, o2.name, fkc.constraint_column_id
+) A 
+
+117.) Merger rows to a column
+
+
+SELECT  
+     SalesOrderID           = soh.SalesOrderID
+    ,OrderDate              = soh.OrderDate
+    ,sod.UnitPrice1
+FROM Sales.SalesOrderHeader AS soh
+cross apply 
+		(
+			select STUFF((
+						 (SELECT  ', ' + CAST(sod.UnitPrice AS VARCHAR(50))  FROM Sales.SalesOrderDetail sod WHERE soh.SalesOrderID = sod.SalesOrderID FOR XML PATH('')) 
+						), 1, 1, '') AS UnitPrice1
+			
+		) sod
+
+
+
+118.) Cross Apply 
+
+
+SELECT 
+    soh.SalesOrderID
+    ,soh.OrderDate
+    ,sod.max_unit_price
+FROM Sales.SalesOrderHeader AS soh
+CROSS APPLY
+(
+    SELECT 
+        max_unit_price = MAX(sod.UnitPrice)
+    FROM Sales.SalesOrderDetail AS sod
+    WHERE soh.SalesOrderID = sod.SalesOrderID
+) sod
+
+119.) ALL CMD
+
+Select db_name(qs.dbid) ,st.text,  * from sysprocesses qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
+where PROGRAM_NAME like '%CMD%' and 
+db_name(qs.dbid) like 'xerov3_%' 
+Order by db_name(qs.dbid) 
+
+
+120.) Table RowCnt
+
+
+if object_id('tempdb..#Temp_Index') is not null drop table #Temp_Index CREATE TABLE #Temp_Index ( Servername varchar(100) , DBName varchaR(100) , RowCnt int )
+
+
+
+
+INSERT INTO #Temp_Index 
+EXEC sp_msforeachdb ' if ''?'' like  ''xerov3_%''  
+begin
+use [?]
+select @@Servername , ''?'' ,  I.Rowcnt
+from sysindexes I where ID = object_id(''JournalLine'')  and indid = 1 
+end'
+
+
+Select * from #Temp_Index where Servername <> '647052-O1PHREST'
+
+121.) Permission for table Type
+
+SELECT [type] = t.name
+  /*
+  [schema] = s.name, 
+  [type] = t.name, 
+  [user] = u.name, 
+  p.permission_name, 
+  p.state_desc
+  */
+FROM sys.database_permissions AS p
+INNER JOIN sys.database_principals AS u
+  ON p.grantee_principal_id = u.principal_id
+INNER JOIN sys.types AS t
+  ON p.major_id = t.user_type_id--.[object_id]
+INNER JOIN sys.schemas AS s
+  ON t.[schema_id] = s.[schema_id]
+WHERE p.class = 6 -- TYPE
+and t.[Name] ='CodeTableType'
+
+122.) Shards check - User defined functions
+
+if object_id('tempdb..#Temp_Index') is not null drop table #Temp_Index CREATE TABLE #Temp_Index ( Servername varchar(100) , DBName varchaR(100) , RowCnt int )
+
+INSERT INTO #Temp_Index 
+EXEC sp_msforeachdb ' if ''?'' like  ''xerov3_%''  
+begin
+use [?]
+--select @@Servername , ''?'' ,  1 from [?].sys.table_types where name =''CodeTableType''
+select @@Servername , ''?'' ,  1 from [?].sys.objects WHERE type_desc LIKE ''%FUNCTION%'' and name = ''RoundBanker''
+end'
+
+
+Select * from #Temp_Index where Servername <> '647052-O1PHREST'
+
+
+123.) Long Running Queries 
+--Use DBA 
+ 
+if object_id('tempdb..#TempLongRunningQueries') is not null drop table #TempLongRunningQueries 
+CREATE TABLE #TempLongRunningQueries ( Servername varchar(100) , DBName varchaR(100) , EventTimeStampUTC_ToCurrent datetime , EventTimeStampUTC datetime, EventType varchar(100) ,
+					CPUTime  int , Duration int ,PhysicalReads int , LogicalReads int , Writes int , IndividualStatement nvarchar(max ))
+
+declare @StatementChcek nvarchar(100)  = 'PriceListItems_ItemSummaryReport'
+
+
+INSERT INTO #TempLongRunningQueries 
+
+
+Select  top 100 @@servername , DatabaseName ,dateadd (hour,13,EventTimeStampUTC) EventTimeStampUTC_ToCurrent , EventTimeStampUTC , EventType , CPUTime , Duration,PhysicalReads, LogicalReads, Writes ,
+ IndividualStatement 
+FROM dba.snapshot.LongRunningQueries 
+WHERE  dateadd (hour,13,EventTimeStampUTC)    > dateadd(HH, -24,GETDATE()) 
+and DatabaseName LIKE 'Xerov3_%'
+and IndividualStatement like '%' + @StatementChcek + '%' 
+--and  @@servername <> ''647052-O1PHREST''
+order by EventTimeStampUTC desc 
+
+
+--report
+
+
+Select  * from #TempLongRunningQueries where 
+Select  DBName , count(1)  from #TempLongRunningQueries  Group by DBName 
+
+124.) Check the cluster voting
+powershell ( Go to the individual server)s
+
+
+Import-Module FailoverClusters
+
+$node = “AlwaysOnSrv1”
+(Get-ClusterNode $node).NodeWeight = 0
+
+$cluster = (Get-ClusterNode $node).Cluster
+$nodes = Get-ClusterNode -Cluster $cluster
+
+$nodes | Format-Table -property NodeName, State, NodeWeight
+
+124.) disk space usage
+
+$Compname = 'ASQN-HSAVGF'
+Get-WmiObject -ComputerName $Compname  -Class Win32_Volume | 
+    Where-Object {$_.DriveType -eq 3 }  |
+    Sort-Object -Property Name | 
+    Select-Object Name, blocksize, FileSystem, deviceid,  `
+        @{"Label"="DiskSize(GB)";"Expression"={"{0:N}" -f ($_.Capacity/1GB) -as [float]}}, `
+        @{"Label"="FreeSpace(GB)";"Expression"={"{0:N}" -f ($_.FreeSpace/1GB) -as [float]}}, `
+        @{"Label"="%Free";"Expression"={"{0:N}" -f ($_.FreeSpace/$_.Capacity*100) -as [float]}} |
+    Format-Table -AutoSize 
+
+
+125.) Creating a XeroReporitng in AWS
+
+cls 
+
+##============================================================================== XeroReporting===================================================================================================================
+#Get-AWSMFACredentials -ProfileName Default -MFASerial arn:aws:iam::477275408388:mfa/jude.pieries@xero.com -RoleAccountNumber 192337955983 -RoleName PowerUser
+#New-ShellDatabase -AGName 'XSQ963VL_AG' -PrimaryNode 'ASQN-7124e2ab' -DatabaseName 'XeroReporting' -DNSName 'uat.aws.xero.com' -DataFilePathRoot 'U:\XSQ963VL_AG' -DisableServiceBroker $true -Verbose;
+#Invoke-SqlPackageAction -Action Publish -DacpacFilePath C:\xero\releases\databases\XeroReporting\XeroReporting-develop-v2.38.0.24.2575\XeroReporting.dacpac -PublishProfileFilePath C:\xero\releases\databases\XeroReporting\XeroReporting-develop-v2.38.0.24.2575\XeroReporting.Database.Livestage.publish.xml -SqlPackageParameters @{TargetServerName="ASQN-7124e2ab" ; TargetDatabaseName="XeroReporting"} -Verbose;
+
+
+##============================================================================== XeroReportingTest===================================================================================================================
+#Get-AWSMFACredentials -ProfileName Default -MFASerial arn:aws:iam::477275408388:mfa/jude.pieries@xero.com -RoleAccountNumber 192337955983 -RoleName PowerUser
+#New-ShellDatabase -AGName 'XSQ963VL_AG' -PrimaryNode 'ASQN-7124e2ab' -DatabaseName 'XeroReportingTest' -DNSName 'uat.aws.xero.com' -DataFilePathRoot 'U:\XSQ963VL_AG' -DisableServiceBroker $true -Verbose;
+#Invoke-SqlPackageAction -Action Publish -DacpacFilePath C:\xero\releases\databases\XeroReporting\XeroReporting-develop-v2.38.0.24.2575\XeroReporting.dacpac -PublishProfileFilePath C:\xero\releases\databases\XeroReporting\XeroReporting-develop-v2.38.0.24.2575\XeroReporting.Database.Livestage.publish.xml -SqlPackageParameters @{TargetServerName="ASQN-7124e2ab" ; TargetDatabaseName="XeroReportingtest"} -Verbose;
+
+Invoke-SqlPackageAction -Action Publish -DacpacFilePath C:\xero\releases\databases\XeroReporting\XeroReporting-master-v2.39.3.0.2652\XeroReporting.dacpac -PublishProfileFilePath C:\xero\releases\databases\XeroReporting\XeroReporting-master-v2.39.3.0.2652\XeroReporting.Database.Livestage.publish.xml -SqlPackageParameters @{TargetServerName="ASQN-7124e2ab" ; TargetDatabaseName="XeroReportingtest"} -Verbose;
+
+126.) Find node details in AWS 
+SELECT 
+	ARCS.replica_server_name 
+	,HARS.Role_Desc 	
+	,RCS.database_name 
+	,RS.last_commit_time
+--into  #Temp_ReplicaList_Primary
+FROM sys.dm_hadr_database_replica_states RS
+JOIN  sys.dm_hadr_database_replica_cluster_states RCS ON 
+	RS.replica_id = RCS.replica_id AND
+		RS.group_database_id = RCS.group_database_id
+JOIN Sys.dm_hadr_availability_replica_cluster_states ARCS ON
+		ARCS.replica_id =  RS.replica_id	
+JOIN Sys.dm_hadr_availability_replica_states HARS ON 
+	RS.replica_id = HARS.replica_id
+ where HARS.Role_Desc = 'PRIMARY'
+where replica_server_name = 'GSQN-JQ90BP'
+
+
+127.) Shard - Check function 
+
+
+
+if object_id('tempdb..#Temp_Index') is not null drop table #Temp_Index CREATE TABLE #Temp_Index ( IndexName varchar(100) )
+if object_id('tempdb..#Temp_IndexExists') is not null drop table #Temp_IndexExists CREATE TABLE #Temp_IndexExists ( dbnAME VARCHAR(100), IndexName varchar(100) ,Exists1 VARCHAR(3)  )
+
+INSERT INTO  #Temp_Index 
+VALUES 
+--('FK_LinkedTransaction_SourceLineItem') 
+--, 
+('RoundBanker')
+
+
+
+INSERT INTO #Temp_IndexExists
+EXEC sp_msforeachdb ' if ''?'' like  ''xerov3_%'' 
+use [?]
+begin 
+
+select ''?'' ,  T.IndexName ,case when I.name is null THEN ''NO'' ELSE ''YES'' END 
+from #Temp_Index T
+left join [?]..sysobjects I ON T.IndexName = I.name collate database_default and 
+	I.ID = object_id(''dbo.RoundBanker'') and I.Xtype = ''FN'' 
+end'
+
+
+Select * from #Temp_IndexExists WHERE eXISTS1 <>  'YES' and dbname like 'XEROV3%'
+
+
+128.) Jobs that failed in AWS
+
+
+USE MSDB
+GO
+select j.Name
+    ,js.step_name AS Step
+	,RunDateTime = dbo.agent_datetime(jh.run_date,jh.run_time)
+    ,jh.sql_severity as Severity
+	,jh.[Message]
+FROM msdb.dbo.sysjobs AS j
+INNER JOIN msdb.dbo.sysjobsteps AS js ON js.job_id = j.job_id 
+INNER JOIN msdb.dbo.sysjobhistory AS jh ON jh.job_id = j.job_id and jh.step_id = js.step_id
+WHERE jh.run_status in (0)  and sql_message_id <> 50000
+and dbo.agent_datetime(jh.run_date,jh.run_time) > DATEADD(DAY, -1, GETUTCDATE())
+ORDER BY [RunDateTime] DESC
+
+
+129.) Removing Shard from the Routing 
+Remove-RoutingShard -url 'http://routing.service.livestage6.test.xero.com' -shard 79
+
+130.) DB is Suspect
+	- EXEC sp_resetstatus 'DBname'; -- removed the suspect flag from DB
+        - ALTER DATABASE DBname SET EMERGENCY -- Set the database into emergency mode (only allows users with sysadmin to login)
+        - dncc checkdb ()
+        - ALTER DATABASE DBName SET SINGLE_USER WITH ROLLBACK IMMEDIATE    -- take the db to single user mode that would cause all the open transaction inflight to rollback
+        - Fix that data 
+        - Get the database into multiuser
+        
+131.) AG Listner IP address 
+
+	Select A.dns_name ,B.ip_Address , state_desc 
+	from sys.availability_group_listeners A 
+	JOIN sys.availability_group_listener_ip_addresses b on A.listener_id = B.listener_id
+
+132.) Geo Shards + Data cache usage
+
+if object_id('tempdb..#Temp_BufferPool') is not null drop table #Temp_BufferPool
+SELECT
+ CASE database_id
+            WHEN 32767 THEN 'RESOURCEDB'
+            ELSE db_name(database_id)
+            END AS 'DatabaseName'           
+,Count(1)*8/1024 AS 'Data_CacheSize_MB'
+into  #Temp_BufferPool 
+FROM sys.dm_os_buffer_descriptors
+GROUP BY db_name(database_id) ,database_id 
+ORDER BY DatabaseName
+
+
+if object_id('tempdb..#Temp_ReplicaList_Primary') is not null drop table #Temp_ReplicaList_Primary
+SELECT 
+	ARCS.replica_server_name 
+	,HARS.Role_Desc 	
+	,RCS.database_name 
+	,RS.last_commit_time
+into  #Temp_ReplicaList_Primary
+FROM sys.dm_hadr_database_replica_states RS
+JOIN  sys.dm_hadr_database_replica_cluster_states RCS ON 
+	RS.replica_id = RCS.replica_id AND
+		RS.group_database_id = RCS.group_database_id
+JOIN Sys.dm_hadr_availability_replica_cluster_states ARCS ON
+		ARCS.replica_id =  RS.replica_id	
+JOIN Sys.dm_hadr_availability_replica_states HARS ON 
+	RS.replica_id = HARS.replica_id
+ where HARS.Role_Desc = 'PRIMARY'
+
+
+
+if object_id('tempdb..#Temp_GeoShards') is not null drop table #Temp_GeoShards 
+CREATE TABLE #Temp_GeoShards (Servername varchar(100) ,dbnAME VARCHAR(100), DbSegmentID varchar(100) ,XeroVersionCode varchar(100) , RowCnt int    )
+
+insert into #Temp_GeoShards
+EXEC sp_msforeachdb ' if ''?'' like  ''xerov3_%''  
+begin
+use [?]
+select @@Servername , ''?'' ,  DbSegmentID , XeroVersionCode , Count(1) RowCnt  from ?..Organisation  where  OrganisationStatusCode <> ''ORGSTATUS/TEMPLATE'' group by DbSegmentID , XeroVersionCode 
+end'
+
+
+
+
+declare @XeroVersionCode varchar(4000) = '' ,
+		@SQLString varchar(8000) = '' 
+Select @XeroVersionCode = @XeroVersionCode  + '['+ isnull(XeroVersionCode,'EMPTY') + '] ,' from (select distinct XeroVersionCode from #Temp_GeoShards where XeroVersionCode is not null) A 
+
+
+
+set @SQLString = 
+				' if object_id(''tempdb..#Temp_GeoShardPivot'') is not null drop table #Temp_GeoShardPivot 
+				  Select *   from 
+				  (
+					  Select GS.* , P.Role_Desc , BP.Data_CacheSize_MB
+					  from #Temp_GeoShards GS
+					  join  #Temp_BufferPool BP ON BP.DatabaseName = GS.dbnAME
+					  JOIN #Temp_ReplicaList_Primary p ON P.Database_Name = BP.DatabaseName 
+				  ) A 
+				  pivot (sum(rowcnt) for XeroVersionCode in ( ' +  substring(@XeroVersionCode , 1 , len(@XeroVersionCode) -1)  + ' )) as A ' 
+
+ exec( @SQLString)
+
+133.) HADR commands 
+
+A.) Remove DB from primary server 
+ALTER AVAILABILITY GROUP MyAG REMOVE DATABASE Db6;  
+
+B.) Remove from secondary node 
+ALTER DATABASE MyDb2 SET HADR OFF; 
+
+C.) Manual failover
+    - Log to the secondary node 
+    -  ALTER AVAILABILITY GROUP MyAg FAILOVER;  
+
+D.) Remove AG from HADR 
+    DROP AVAILABILITY GROUP LS4SmartsFeed_AG 
+
+E.) Join AG to secondary node 
+    ALTER AVAILABILITY GROUP LS4XeroReportingPractice_AG JOIN;
+
+F.) Add DB to secondary AG 
+https://msdn.microsoft.com/en-us/library/ff878535.aspx
+ALTER DATABASE [ESAM] SET HADR AVAILABILITY GROUP = [LS4_XS48FNL2_AG];
+
+G.) Add an existing database to the primary availability group.  
+https://msdn.microsoft.com/en-us/library/hh213078.aspx
+ALTER AVAILABILITY GROUP MyAG ADD DATABASE MyDb3;  
+
+F.) HADR tables
+select * from sys.availability_groups
+select * from sys.availability_group_listeners
+select * from sys.availability_group_listener_ip_addresses
+select * from sys.availability_groups_cluster
+select * from sys.dm_hadr_availability_group_states
+	
+
+134.) 
+
+#$url = 'https://routing.service.xero.com/v1/shards/'
+$url = 'https://routing.service.xero.com/v1/shards/'
+
+   $shard_list = (Invoke-RestMethod -ContentType "application/json" -Method Get -Uri $url).items
+
+   
+   Foreach  ($shard in $shard_list)
+{
+   if ($shard.cell -in "omtbaseline", "legacy")
+   {
+   }
+   else 
+   {
+       $server = "xerodb_$($shard.id).db.livestage6.test.xero.com"
+       $server 
+   }
+}
+
+AWS - Execute script and 
+
+#$url = 'https://routing.service.xero.com/v1/shards/'
+$url = 'https://routing.service.xero.com/v1/shards/'
+
+   $shard_list = (Invoke-RestMethod -ContentType "application/json" -Method Get -Uri $url).items
+
+   
+   Foreach  ($shard in $shard_list)
+{
+   if ($shard.cell -in "omtbaseline", "legacy")
+   {
+   }
+   else 
+   {
+       #$server = "xerodb_$($shard.id).db.xero.com"
+       $server = "sqlcmd.exe -S xerodb_$($shard.id).db.xero.com -d xerov3_$($shard.id) -h -1 -M -K ReadOnly -s ""	"" -b -i ""Query.sql"" >>""C:\xero\releases\databases\XeroDB\Sep\FA_Data\Result2.csv"""
+       $server 
+   }
+}
+
+
+135.) HostFile
+C:\Windows\System32\Drivers\etc
+
+136.) Compression ( table/Index)
+
+select s.name [Schema], t.name [Table], i.name [Index], p.data_compression_desc Compression
+     , case when p.index_id in (0) then 'Table - Heap' 
+			when p.index_id in (1) then 'Table - Clustered' 
+				else 'Index' end CompressionObject
+  from sys.tables t
+  join sys.schemas s on t.schema_id = s.schema_id
+  join sys.indexes i on t.object_id = i.object_id
+  join sys.partitions p on (i.object_id = p.object_id and i.index_id = p.index_id)
+where t.type = 'U'
+order by 1, 2, p.index_id, 3
+
+136.) Robocopy 
+https://technet.microsoft.com/en-us/library/cc733145(v=ws.11).aspx
+/fft  - Assumes FAT file times (two-second precision). Copies files between diffrent os's 
+/Mt - Multithreading
+/z - starsts to copy the file from where it stops if the files copy was interrupted 
+robocopy "$DBBackupShare\Full" $AWSBackupPath *.bak /MT /FFT /z /r:100 /w:60 /log:"$AWSBackupPath\robocopy_log.txt"
+robocopy V:\snapshots\smartsfeed \\10.160.23.99\W$\MSSQL\Full /MT /fft /z /r:100 /w:60 /log:"SmartsFeed_CopyLog.txt"  SmartsFeed.bak
+
+136.) Kill all connections for a database 
+
+   drop table #temp_bankmanager_spid 
+   declare @DBaname varchar(100) = 'bankmanager'
+   create table #temp_bankmanager_spid ( ID int identity , SPID int , Programname varchar(100))    
+   insert into #temp_bankmanager_spid (SPID , Programname) 
+   select spid , program_name from sysprocesses where dbid = db_id(@DBaname)
+
+
+   declare @ID int = 0 , @SPID int = 0 , @Rowcnt int = 0 , @CurrRowID int = 0 ,@sql varchar(100)
+   select @Rowcnt = count(1) from #temp_bankmanager_spid
+   select @Rowcnt , @ID ,@SPID 
+   while @Rowcnt  > @CurrRowID 
+   begin
+		select top 1 @id = ID , @SPID = spid  from #temp_bankmanager_spid where id > @id order by ID
+		Set @sql = ' kill ' + convert(varchar(10),@SPID) 
+		exec (@sql)
+		Select @ID ,@SPID 
+
+		set @CurrRowID = @CurrRowID + 1 
+
+   end 
+
+
+ select spid , program_name from sysprocesses where dbid = db_id(@DBaname)
+
+
+
+
+7ygv8uhb9ijn)OKM
